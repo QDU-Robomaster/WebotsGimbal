@@ -1,0 +1,67 @@
+#pragma once
+
+// clang-format off
+/* === MODULE MANIFEST V2 ===
+module_description: No description provided
+constructor_args: []
+template_args: []
+required_hardware: []
+depends: []
+=== END MANIFEST === */
+// clang-format on
+
+#include <webots/Motor.hpp>
+#include <webots/Robot.hpp>
+
+#include "app_framework.hpp"
+#include "libxr.hpp"
+#include "message.hpp"
+#include "transform.hpp"
+
+extern webots::Robot *_libxr_webots_robot_handle;
+
+class WebotsGimbal : public LibXR::Application
+{
+  enum class MotorType
+  {
+    PITCH,
+    YAW,
+    NUMBER
+  };
+
+  static constexpr const char *MOTOR_NAMES[2] = {"target_motor_pitch",
+                                                 "target_motor_yaw"};
+
+ public:
+  WebotsGimbal(LibXR::HardwareContainer &, LibXR::ApplicationManager &app)
+  {
+    // Hardware initialization example:
+    // auto dev = hw.template Find<LibXR::GPIO>("led");
+
+    for (size_t i = 0; i < static_cast<size_t>(MotorType::NUMBER); i++)
+    {
+      motors_[i] = _libxr_webots_robot_handle->getMotor(MOTOR_NAMES[i]);
+    }
+
+    auto cb = LibXR::Topic::Callback::Create(
+        [](bool, WebotsGimbal *self, LibXR::RawData &data)
+        {
+          auto eulr = *static_cast<LibXR::EulerAngle<float> *>(data.addr_);
+          self->motors_[static_cast<size_t>(MotorType::PITCH)]->setPosition(eulr.Pitch());
+          self->motors_[static_cast<size_t>(MotorType::YAW)]->setPosition(eulr.Yaw());
+        },
+        this);
+
+    target_eulr_topic_.RegisterCallback(cb);
+
+    app.Register(*this);
+  }
+
+  void OnMonitor() override {}
+
+ private:
+  webots::Motor *motors_[static_cast<size_t>(MotorType::NUMBER)];
+
+  LibXR::Topic target_eulr_topic_ =
+      LibXR::Topic("target_eulr", sizeof(LibXR::EulerAngle<float>));
+};
