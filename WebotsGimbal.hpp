@@ -41,6 +41,9 @@ class WebotsGimbal : public LibXR::Application
     for (size_t i = 0; i < static_cast<size_t>(MotorType::NUMBER); i++)
     {
       motors_[i] = _libxr_webots_robot_handle->getMotor(MOTOR_NAMES[i]);
+      motors_[i]->setVelocity(10.0f);
+      motors_[i]->setForce(10.0f);
+      motors_[i]->setPosition(0.0f);
     }
 
     auto cb = LibXR::Topic::Callback::Create(
