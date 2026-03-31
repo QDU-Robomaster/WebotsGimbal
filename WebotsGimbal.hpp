@@ -75,11 +75,6 @@ class WebotsGimbal : public LibXR::Application
  private:
   webots::Motor *motors_[static_cast<size_t>(MotorType::NUMBER)];
 
-  // Keep a default-domain topic handle alive so SharedTopic_MCU can find it,
-  // while actual motor commands subscribe directly to the tracker-domain topic.
-  LibXR::Topic bridge_target_eulr_topic_ =
-      LibXR::Topic::FindOrCreate<LibXR::EulerAngle<float>>("target_eulr");
-  LibXR::Topic::Domain tracker_domain_ = LibXR::Topic::Domain("tracker");
   LibXR::Topic target_eulr_topic_ =
-      LibXR::Topic("target_eulr", sizeof(LibXR::EulerAngle<float>), &tracker_domain_);
+      LibXR::Topic("target_eulr", sizeof(LibXR::EulerAngle<float>));
 };
