@@ -14,6 +14,7 @@ depends: []
 #include <webots/Robot.hpp>
 
 #include <cmath>
+#include <cstdlib>
 
 #include "app_framework.hpp"
 #include "libxr.hpp"
@@ -38,6 +39,9 @@ class WebotsGimbal : public LibXR::Application
  public:
   WebotsGimbal(LibXR::HardwareContainer &, LibXR::ApplicationManager &app)
   {
+    const char *disable_env = std::getenv("XR_DISABLE_GIMBAL_CONTROL");
+    control_disabled_ =
+        disable_env != nullptr && disable_env[0] != '\0' && disable_env[0] != '0';
     // Hardware initialization example:
     // auto dev = hw.template Find<LibXR::GPIO>("led");
 
@@ -49,9 +53,18 @@ class WebotsGimbal : public LibXR::Application
       motors_[i]->setPosition(0.0f);
     }
 
+    if (control_disabled_)
+    {
+      XR_LOG_WARN("WebotsGimbal control disabled by XR_DISABLE_GIMBAL_CONTROL");
+    }
+
     auto cb = LibXR::Topic::Callback::Create(
         [](bool, WebotsGimbal *self, LibXR::RawData &data)
         {
+          if (self->control_disabled_)
+          {
+            return;
+          }
           auto eulr = *static_cast<LibXR::EulerAngle<float> *>(data.addr_);
           if (!std::isfinite(eulr.Pitch()) || !std::isfinite(eulr.Yaw()))
           {
@@ -74,6 +87,7 @@ class WebotsGimbal : public LibXR::Application
 
  private:
   webots::Motor *motors_[static_cast<size_t>(MotorType::NUMBER)];
+  bool control_disabled_{false};
 
   LibXR::Topic target_eulr_topic_ =
       LibXR::Topic("target_eulr", sizeof(LibXR::EulerAngle<float>));
