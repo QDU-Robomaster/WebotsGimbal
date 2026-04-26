@@ -13,6 +13,7 @@ depends: []
 #include <webots/Motor.hpp>
 #include <webots/Robot.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 
@@ -35,6 +36,20 @@ class WebotsGimbal : public LibXR::Application
 
   static constexpr const char *MOTOR_NAMES[2] = {"target_motor_pitch",
                                                  "target_motor_yaw"};
+  static constexpr float PI = 3.14159265358979323846f;
+
+  static float LimitRad(float angle)
+  {
+    while (angle > PI)
+    {
+      angle -= 2.0f * PI;
+    }
+    while (angle <= -PI)
+    {
+      angle += 2.0f * PI;
+    }
+    return angle;
+  }
 
  public:
   WebotsGimbal(LibXR::HardwareContainer &, LibXR::ApplicationManager &app)
@@ -42,6 +57,11 @@ class WebotsGimbal : public LibXR::Application
     const char *disable_env = std::getenv("XR_DISABLE_GIMBAL_CONTROL");
     control_disabled_ =
         disable_env != nullptr && disable_env[0] != '\0' && disable_env[0] != '0';
+    const char *pitch_slew_env = std::getenv("XR_WEBOTS_PITCH_SLEW_STEP_RAD");
+    if (pitch_slew_env != nullptr && pitch_slew_env[0] != '\0')
+    {
+      pitch_slew_step_rad_ = std::max(0.0f, std::strtof(pitch_slew_env, nullptr));
+    }
     // Hardware initialization example:
     // auto dev = hw.template Find<LibXR::GPIO>("led");
 
@@ -56,6 +76,11 @@ class WebotsGimbal : public LibXR::Application
     if (control_disabled_)
     {
       XR_LOG_WARN("WebotsGimbal control disabled by XR_DISABLE_GIMBAL_CONTROL");
+    }
+    if (pitch_slew_step_rad_ > 0.0f)
+    {
+      XR_LOG_WARN("WebotsGimbal pitch slew enabled step_rad=%f",
+                  static_cast<double>(pitch_slew_step_rad_));
     }
 
     auto cb = LibXR::Topic::Callback::Create(
@@ -73,8 +98,23 @@ class WebotsGimbal : public LibXR::Application
                         static_cast<double>(eulr.Yaw()));
             return;
           }
-          self->motors_[static_cast<size_t>(MotorType::PITCH)]->setPosition(eulr.Pitch());
-          self->motors_[static_cast<size_t>(MotorType::YAW)]->setPosition(eulr.Yaw());
+          float pitch = eulr.Pitch();
+          if (self->pitch_slew_step_rad_ > 0.0f)
+          {
+            if (self->has_last_pitch_command_)
+            {
+              pitch = std::clamp(
+                  pitch,
+                  self->last_pitch_command_ - self->pitch_slew_step_rad_,
+                  self->last_pitch_command_ + self->pitch_slew_step_rad_);
+            }
+            self->last_pitch_command_ = pitch;
+            self->has_last_pitch_command_ = true;
+          }
+          self->motors_[static_cast<size_t>(MotorType::PITCH)]->setPosition(
+              -pitch);
+          self->motors_[static_cast<size_t>(MotorType::YAW)]->setPosition(
+              LimitRad(eulr.Yaw() + 0.5f * PI));
         },
         this);
 
@@ -88,6 +128,9 @@ class WebotsGimbal : public LibXR::Application
  private:
   webots::Motor *motors_[static_cast<size_t>(MotorType::NUMBER)];
   bool control_disabled_{false};
+  float pitch_slew_step_rad_{0.0f};
+  float last_pitch_command_{0.0f};
+  bool has_last_pitch_command_{false};
 
   LibXR::Topic target_eulr_topic_ =
       LibXR::Topic("target_eulr", sizeof(LibXR::EulerAngle<float>));
