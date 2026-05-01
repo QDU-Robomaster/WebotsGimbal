@@ -19,6 +19,27 @@ depends: []
 #include <limits>
 
 #include "app_framework.hpp"
+#if __has_include("GimbalPlan.hpp")
+#include "GimbalPlan.hpp"
+#else
+#ifndef QDU_GIMBAL_PLAN_HPP
+#define QDU_GIMBAL_PLAN_HPP
+struct GimbalPlan
+{
+  uint64_t image_timestamp_us{0};
+  bool control{false};
+  bool fire{false};
+  float target_yaw{0.0f};
+  float target_pitch{0.0f};
+  float yaw{0.0f};
+  float yaw_vel{0.0f};
+  float yaw_acc{0.0f};
+  float pitch{0.0f};
+  float pitch_vel{0.0f};
+  float pitch_acc{0.0f};
+};
+#endif  // QDU_GIMBAL_PLAN_HPP
+#endif
 #include "libxr.hpp"
 #include "logger.hpp"
 #include "message.hpp"
@@ -45,9 +66,13 @@ class WebotsGimbal : public LibXR::Application
                                                  "target_motor_yaw"};
   static constexpr float PITCH_KP = 0.008f;
   static constexpr float PITCH_KD = 0.004f;
+  static constexpr float PITCH_KV_FF = 0.001f;
+  static constexpr float PITCH_KA_FF = 0.00002f;
   static constexpr float PITCH_MAX_TORQUE = 0.005f;
   static constexpr float YAW_KP = 0.04f;
   static constexpr float YAW_KD = 0.015f;
+  static constexpr float YAW_KV_FF = 0.005f;
+  static constexpr float YAW_KA_FF = 0.00008f;
   static constexpr float YAW_MAX_TORQUE = 0.02f;
 
  public:
@@ -78,6 +103,50 @@ class WebotsGimbal : public LibXR::Application
         this);
     gimbal_rotation_topic_.RegisterCallback(rotation_cb);
 
+    auto plan_cb = LibXR::Topic::Callback::Create(
+        [](bool, WebotsGimbal *self, LibXR::RawData &data)
+        {
+          const auto plan = *static_cast<GimbalPlan *>(data.addr_);
+          if (!plan.control)
+          {
+            self->have_plan_ = false;
+            self->target_pitch_vel_ = 0.0f;
+            self->target_yaw_vel_ = 0.0f;
+            self->target_pitch_acc_ = 0.0f;
+            self->target_yaw_acc_ = 0.0f;
+            return;
+          }
+
+          if (!std::isfinite(plan.pitch) || !std::isfinite(plan.yaw) ||
+              !std::isfinite(plan.pitch_vel) || !std::isfinite(plan.yaw_vel))
+          {
+            XR_LOG_WARN("WebotsGimbal ignored non-finite gimbal_plan");
+            return;
+          }
+
+          if (!self->have_plan_)
+          {
+            XR_LOG_INFO(
+                "WebotsGimbal first gimbal_plan pitch=%f yaw=%f pitch_vel=%f yaw_vel=%f",
+                static_cast<double>(plan.pitch), static_cast<double>(plan.yaw),
+                static_cast<double>(plan.pitch_vel),
+                static_cast<double>(plan.yaw_vel));
+          }
+
+          self->target_pitch_ = plan.pitch;
+          self->target_yaw_ = plan.yaw;
+          self->target_pitch_vel_ = plan.pitch_vel;
+          self->target_yaw_vel_ = plan.yaw_vel;
+          self->target_pitch_acc_ = plan.pitch_acc;
+          self->target_yaw_acc_ = plan.yaw_acc;
+          self->have_plan_ = true;
+          self->have_target_ = true;
+          self->EnableMotors();
+          self->UpdateTorque();
+        },
+        this);
+    gimbal_plan_topic_.RegisterCallback(plan_cb);
+
     auto target_cb = LibXR::Topic::Callback::Create(
         [](bool, WebotsGimbal *self, LibXR::RawData &data)
         {
@@ -95,6 +164,11 @@ class WebotsGimbal : public LibXR::Application
             return;
           }
 
+          if (self->have_plan_)
+          {
+            return;
+          }
+
           if (!self->have_target_)
           {
             XR_LOG_INFO("WebotsGimbal first target_eulr pitch=%f yaw=%f",
@@ -104,6 +178,10 @@ class WebotsGimbal : public LibXR::Application
 
           self->target_pitch_ = target.Pitch();
           self->target_yaw_ = target.Yaw();
+          self->target_pitch_vel_ = 0.0f;
+          self->target_yaw_vel_ = 0.0f;
+          self->target_pitch_acc_ = 0.0f;
+          self->target_yaw_acc_ = 0.0f;
           self->have_target_ = true;
           self->EnableMotors();
           self->UpdateTorque();
@@ -146,13 +224,18 @@ class WebotsGimbal : public LibXR::Application
     const float yaw_error = LimitRad(target_yaw_ - current_yaw_);
     const float pitch_rate = have_gyro_ ? pitch_rate_ : 0.0f;
     const float yaw_rate = have_gyro_ ? yaw_rate_ : 0.0f;
+    const float target_pitch_vel = have_plan_ ? target_pitch_vel_ : 0.0f;
+    const float target_yaw_vel = have_plan_ ? target_yaw_vel_ : 0.0f;
     // 当前 world 标定结果：pitch motor 正力矩会让发布系 pitch 变小，
     // 因此 P/D 项符号与 yaw 轴相反。
     const float pitch_torque =
-        Clamp(-PITCH_KP * pitch_error + PITCH_KD * pitch_rate,
+        Clamp(-PITCH_KP * pitch_error + PITCH_KD * pitch_rate -
+                  PITCH_KV_FF * target_pitch_vel - PITCH_KA_FF * target_pitch_acc_,
               -PITCH_MAX_TORQUE, PITCH_MAX_TORQUE);
-    const float yaw_torque = Clamp(YAW_KP * yaw_error - YAW_KD * yaw_rate,
-                                   -YAW_MAX_TORQUE, YAW_MAX_TORQUE);
+    const float yaw_torque =
+        Clamp(YAW_KP * yaw_error - YAW_KD * yaw_rate +
+                  YAW_KV_FF * target_yaw_vel + YAW_KA_FF * target_yaw_acc_,
+              -YAW_MAX_TORQUE, YAW_MAX_TORQUE);
 
     motors_[static_cast<size_t>(MotorType::PITCH)]->setTorque(pitch_torque);
     motors_[static_cast<size_t>(MotorType::YAW)]->setTorque(yaw_torque);
@@ -161,10 +244,13 @@ class WebotsGimbal : public LibXR::Application
     if ((command_count_ % 3000U) == 0U)
     {
       XR_LOG_INFO(
-          "WebotsGimbal torque cmd=%u pitch_err=%f yaw_err=%f pitch_rate=%f yaw_rate=%f pitch_torque=%f yaw_torque=%f",
-          command_count_, static_cast<double>(pitch_error),
+          "WebotsGimbal torque cmd=%u plan=%d pitch_err=%f yaw_err=%f pitch_rate=%f yaw_rate=%f target_pitch_vel=%f target_yaw_vel=%f target_pitch_acc=%f target_yaw_acc=%f pitch_torque=%f yaw_torque=%f",
+          command_count_, have_plan_ ? 1 : 0, static_cast<double>(pitch_error),
           static_cast<double>(yaw_error), static_cast<double>(pitch_rate),
-          static_cast<double>(yaw_rate), static_cast<double>(pitch_torque),
+          static_cast<double>(yaw_rate), static_cast<double>(target_pitch_vel),
+          static_cast<double>(target_yaw_vel),
+          static_cast<double>(target_pitch_acc_),
+          static_cast<double>(target_yaw_acc_), static_cast<double>(pitch_torque),
           static_cast<double>(yaw_torque));
     }
   }
@@ -198,6 +284,7 @@ class WebotsGimbal : public LibXR::Application
   webots::Motor *motors_[static_cast<size_t>(MotorType::NUMBER)]{};
   bool motors_enabled_{false};
   bool have_target_{false};
+  bool have_plan_{false};
   bool have_rotation_{false};
   bool have_gyro_{false};
   uint32_t command_count_{0};
@@ -207,10 +294,16 @@ class WebotsGimbal : public LibXR::Application
   float current_yaw_{0.0f};
   float pitch_rate_{0.0f};
   float yaw_rate_{0.0f};
+  float target_pitch_vel_{0.0f};
+  float target_yaw_vel_{0.0f};
+  float target_pitch_acc_{0.0f};
+  float target_yaw_acc_{0.0f};
 
   LibXR::Topic gyro_topic_ = LibXR::Topic::FindOrCreate<GyroStamped>("camera_gyro");
   LibXR::Topic target_eulr_topic_ =
       LibXR::Topic::FindOrCreate<LibXR::EulerAngle<float>>("target_eulr");
+  LibXR::Topic gimbal_plan_topic_ =
+      LibXR::Topic::FindOrCreate<GimbalPlan>("gimbal_plan");
   LibXR::Topic::Domain gimbal_domain_ = LibXR::Topic::Domain("gimbal");
   LibXR::Topic gimbal_rotation_topic_ =
       LibXR::Topic::FindOrCreate<LibXR::Quaternion<float>>("rotation", &gimbal_domain_);
