@@ -2,21 +2,70 @@
 
 // clang-format off
 /* === MODULE MANIFEST V2 ===
-module_description: No description provided
-constructor_args: []
+module_description: Webots torque-mode gimbal controller
+constructor_args:
+  - pid_pitch_angle:
+      k: 1.0
+      p: 16.0
+      i: 0.0
+      d: 0.0
+      i_limit: 0.0
+      out_limit: 10.0
+      cycle: false
+  - pid_pitch_omega:
+      k: 1.0
+      p: 0.012
+      i: 0.04
+      d: 0.0
+      i_limit: 0.08
+      out_limit: 0.035
+      cycle: false
+  - pid_yaw_angle:
+      k: 1.0
+      p: 8.0
+      i: 0.0
+      d: 0.0
+      i_limit: 0.0
+      out_limit: 10.0
+      cycle: true
+  - pid_yaw_omega:
+      k: 1.0
+      p: 0.02
+      i: 0.08
+      d: 0.0
+      i_limit: 0.08
+      out_limit: 0.04
+      cycle: false
+  - pitch_inertia: 0.00012
+  - yaw_inertia: 0.0002
+  - pitch_torque_limit: 0.035
+  - yaw_torque_limit: 0.04
+  - control_period_ms: 1
+  - log_interval: 1000
 template_args: []
 required_hardware: []
 depends: []
 === END MANIFEST === */
 // clang-format on
 
+/**
+ * @file WebotsGimbal.hpp
+ * @brief Webots 云台力矩控制模块。
+ *
+ * 本模块模拟云台下位机：接收瞄准角度/轨迹、读取 Webots 相机姿态和角速度，
+ * 在独立 1ms 控制线程中输出 pitch/yaw 两轴电机力矩。
+ */
+
 #include <webots/Motor.hpp>
 #include <webots/Robot.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
+#include <mutex>
 
 #include "app_framework.hpp"
 #if __has_include("GimbalPlan.hpp")
@@ -24,68 +73,229 @@ depends: []
 #else
 #ifndef QDU_GIMBAL_PLAN_HPP
 #define QDU_GIMBAL_PLAN_HPP
+/**
+ * @brief 云台轨迹消息的本地兜底定义。
+ *
+ * 正常工程中该类型由上游模块提供；这里保留同布局兜底定义，保证模块可以在
+ * 最小化构建环境中独立编译。
+ */
 struct GimbalPlan
 {
-  uint64_t image_timestamp_us{0};
-  bool control{false};
-  bool fire{false};
-  float target_yaw{0.0f};
-  float target_pitch{0.0f};
-  float yaw{0.0f};
-  float yaw_vel{0.0f};
-  float yaw_acc{0.0f};
-  float pitch{0.0f};
-  float pitch_vel{0.0f};
-  float pitch_acc{0.0f};
+  uint64_t image_timestamp_us{0};  ///< 对应图像帧时间戳，单位 us。
+  bool control{false};             ///< 是否接管云台控制。
+  bool fire{false};                ///< 上游开火建议，本模块不直接使用。
+  float target_yaw{0.0f};          ///< 兼容字段：目标 yaw。
+  float target_pitch{0.0f};        ///< 兼容字段：目标 pitch。
+  float yaw{0.0f};                 ///< 计划 yaw 角。
+  float yaw_vel{0.0f};             ///< 计划 yaw 角速度。
+  float yaw_acc{0.0f};             ///< 计划 yaw 角加速度。
+  float pitch{0.0f};               ///< 计划 pitch 角。
+  float pitch_vel{0.0f};           ///< 计划 pitch 角速度。
+  float pitch_acc{0.0f};           ///< 计划 pitch 角加速度。
 };
 #endif  // QDU_GIMBAL_PLAN_HPP
 #endif
 #include "libxr.hpp"
 #include "logger.hpp"
 #include "message.hpp"
+#include "pid.hpp"
 #include "transform.hpp"
 
+/**
+ * @brief Webots Robot 全局句柄，由 Webots 系统层提供。
+ */
 extern webots::Robot *_libxr_webots_robot_handle;
 
+/**
+ * @brief Webots 云台力矩控制器。
+ *
+ * topic 回调只缓存最新命令和反馈；固定周期控制线程独占 PID 状态和 Webots 电机输出。
+ */
 class WebotsGimbal : public LibXR::Application
 {
-  struct GyroStamped
+  /**
+   * @brief `camera_gyro` topic 的原始三轴角速度样本。
+   */
+  using GyroSample = std::array<float, 3>;
+
+  /**
+   * @brief 当前有效目标命令。
+   *
+   * 该结构只保存控制线程需要的目标角、目标角速度和目标角加速度。若命令来自
+   * 兼容 `target_eulr`，速度和加速度按 0 处理。
+   */
+  struct TargetCommand
   {
-    LibXR::MicrosecondTimestamp sensor_timestamp_us{};
-    std::array<float, 3> angular_velocity_xyz{};
+    bool valid{false};      ///< 当前是否有可执行目标。
+    bool from_plan{false};  ///< 当前目标是否来自 `gimbal_plan`。
+    float pitch{0.0f};      ///< 目标 pitch 角，单位 rad。
+    float yaw{0.0f};        ///< 目标 yaw 角，单位 rad。
+    float pitch_vel{0.0f};  ///< 计划 pitch 角速度，单位 rad/s。
+    float yaw_vel{0.0f};    ///< 计划 yaw 角速度，单位 rad/s。
+    float pitch_acc{0.0f};  ///< 计划 pitch 角加速度，单位 rad/s^2。
+    float yaw_acc{0.0f};    ///< 计划 yaw 角加速度，单位 rad/s^2。
   };
 
+  /**
+   * @brief 最新云台反馈。
+   *
+   * 姿态来自 `gimbal/rotation`，角速度来自 `camera_gyro`。如果角速度尚未到达，
+   * 控制线程会用 0 作为速度反馈。
+   */
+  struct FeedbackState
+  {
+    bool has_rotation{false};  ///< 是否已经收到姿态反馈。
+    bool has_gyro{false};      ///< 是否已经收到陀螺仪反馈。
+    float pitch{0.0f};         ///< 当前 pitch 角，单位 rad。
+    float yaw{0.0f};           ///< 当前 yaw 角，单位 rad。
+    float pitch_rate{0.0f};    ///< 当前 pitch 角速度，单位 rad/s。
+    float yaw_rate{0.0f};      ///< 当前 yaw 角速度，单位 rad/s。
+  };
+
+  /**
+   * @brief 控制线程每周期使用的一份输入快照。
+   *
+   * 控制线程只在取快照时持有互斥锁，后续 PID 计算和 Webots 电机调用都在锁外执行。
+   */
+  struct ControlSnapshot
+  {
+    TargetCommand target{};      ///< 目标命令快照。
+    FeedbackState feedback{};    ///< 反馈状态快照。
+    bool reset_requested{false};  ///< 回调侧请求控制器复位。
+  };
+
+  /**
+   * @brief Webots 电机索引。
+   */
   enum class MotorType
   {
-    PITCH,
-    YAW,
-    NUMBER
+    PITCH,   ///< pitch 轴电机。
+    YAW,     ///< yaw 轴电机。
+    NUMBER   ///< 电机数量。
   };
 
-  static constexpr const char *MOTOR_NAMES[2] = {"target_motor_pitch",
-                                                 "target_motor_yaw"};
-  static constexpr float PITCH_KP = 0.008f;
-  static constexpr float PITCH_KD = 0.004f;
-  static constexpr float PITCH_KV_FF = 0.001f;
-  static constexpr float PITCH_KA_FF = 0.00002f;
-  static constexpr float PITCH_MAX_TORQUE = 0.005f;
-  static constexpr float YAW_KP = 0.04f;
-  static constexpr float YAW_KD = 0.015f;
-  static constexpr float YAW_KV_FF = 0.005f;
-  static constexpr float YAW_KA_FF = 0.00008f;
-  static constexpr float YAW_MAX_TORQUE = 0.02f;
+  static constexpr const char *MOTOR_NAMES[2] = {
+      "target_motor_pitch",
+      "target_motor_yaw"};  ///< Webots world 中的 pitch/yaw 电机名。
+  static constexpr float PITCH_TORQUE_SIGN = -1.0f;  ///< pitch 力矩方向标定。
+  static constexpr float YAW_TORQUE_SIGN = 1.0f;     ///< yaw 力矩方向标定。
+  static constexpr float PITCH_GRAVITY_TORQUE =
+      0.012f;  ///< pitch 固定重力补偿幅值，单位 Nm。
+  static constexpr float PITCH_GRAVITY_OFFSET =
+      0.0f;  ///< pitch 重力补偿角度偏置，单位 rad。
+  static constexpr float PITCH_COULOMB_TORQUE =
+      0.0008f;  ///< pitch 库伦摩擦补偿幅值，单位 Nm。
+  static constexpr float PITCH_VISCOUS_TORQUE =
+      0.003f;  ///< pitch 粘滞摩擦补偿系数。
+  static constexpr float YAW_COULOMB_TORQUE =
+      0.0008f;  ///< yaw 库伦摩擦补偿幅值，单位 Nm。
+  static constexpr float YAW_VISCOUS_TORQUE =
+      0.004f;  ///< yaw 粘滞摩擦补偿系数。
+  static constexpr float FRICTION_DEADBAND_RAD_S =
+      0.02f;  ///< 摩擦方向判定死区，单位 rad/s。
+  static constexpr float YAW_FORWARD_OFFSET_RAD =
+      static_cast<float>(M_PI / 2.0);  ///< 从右轴 yaw 转为前轴 yaw 的偏移。
 
  public:
-  WebotsGimbal(LibXR::HardwareContainer &, LibXR::ApplicationManager &app)
+  /**
+   * @brief 返回默认 pitch 角度环 PID 参数。
+   * @return 默认 pitch 角度环参数。
+   */
+  static constexpr LibXR::PID<float>::Param DefaultPitchAnglePid()
+  {
+    return LibXR::PID<float>::Param{1.0f, 16.0f, 0.0f, 0.0f, 0.0f, 10.0f,
+                                    false};
+  }
+
+  /**
+   * @brief 返回默认 pitch 角速度环 PID 参数。
+   * @return 默认 pitch 角速度环参数。
+   */
+  static constexpr LibXR::PID<float>::Param DefaultPitchOmegaPid()
+  {
+    return LibXR::PID<float>::Param{1.0f, 0.012f, 0.04f, 0.0f, 0.08f, 0.035f,
+                                    false};
+  }
+
+  /**
+   * @brief 返回默认 yaw 角度环 PID 参数。
+   * @return 默认 yaw 角度环参数。
+   */
+  static constexpr LibXR::PID<float>::Param DefaultYawAnglePid()
+  {
+    return LibXR::PID<float>::Param{1.0f, 8.0f, 0.0f, 0.0f, 0.0f, 10.0f,
+                                    true};
+  }
+
+  /**
+   * @brief 返回默认 yaw 角速度环 PID 参数。
+   * @return 默认 yaw 角速度环参数。
+   */
+  static constexpr LibXR::PID<float>::Param DefaultYawOmegaPid()
+  {
+    return LibXR::PID<float>::Param{1.0f, 0.02f, 0.08f, 0.0f, 0.08f, 0.04f,
+                                    false};
+  }
+
+  /**
+   * @brief 构造 Webots 云台控制器并启动内部控制线程。
+   * @param hardware 硬件容器，本模块当前不直接取硬件对象。
+   * @param app 应用管理器，用于注册本模块。
+   * @param pid_pitch_angle pitch 角度环 PID 参数，输出目标 pitch 角速度。
+   * @param pid_pitch_omega pitch 角速度环 PID 参数，输出 pitch 电机力矩。
+   * @param pid_yaw_angle yaw 角度环 PID 参数，输出目标 yaw 角速度。
+   * @param pid_yaw_omega yaw 角速度环 PID 参数，输出 yaw 电机力矩。
+   * @param pitch_inertia pitch 轴惯量前馈系数。
+   * @param yaw_inertia yaw 轴惯量前馈系数。
+   * @param pitch_torque_limit pitch 最终力矩限幅，单位 Nm。
+   * @param yaw_torque_limit yaw 最终力矩限幅，单位 Nm。
+   * @param control_period_ms 内部控制线程周期，单位 ms，最小值为 1。
+   * @param log_interval 控制日志间隔；为 0 时关闭周期日志。
+   */
+  WebotsGimbal(
+      LibXR::HardwareContainer &hardware, LibXR::ApplicationManager &app,
+      LibXR::PID<float>::Param pid_pitch_angle = DefaultPitchAnglePid(),
+      LibXR::PID<float>::Param pid_pitch_omega = DefaultPitchOmegaPid(),
+      LibXR::PID<float>::Param pid_yaw_angle = DefaultYawAnglePid(),
+      LibXR::PID<float>::Param pid_yaw_omega = DefaultYawOmegaPid(),
+      float pitch_inertia = 0.00012f, float yaw_inertia = 0.0002f,
+      float pitch_torque_limit = 0.035f, float yaw_torque_limit = 0.04f,
+      uint32_t control_period_ms = 1, uint32_t log_interval = 1000)
+      : pid_pitch_angle_(pid_pitch_angle),
+        pid_pitch_omega_(pid_pitch_omega),
+        pid_yaw_angle_(pid_yaw_angle),
+        pid_yaw_omega_(pid_yaw_omega),
+        pitch_inertia_(pitch_inertia),
+        yaw_inertia_(yaw_inertia),
+        pitch_torque_limit_(pitch_torque_limit),
+        yaw_torque_limit_(yaw_torque_limit),
+        control_period_ms_(std::max<uint32_t>(1U, control_period_ms)),
+        log_interval_(log_interval)
+  {
+    (void)hardware;
+    RegisterTopicCallbacks();
+    control_thread_.Create(this, ControlThread, "WebotsGimbalCtl", 8192,
+                           LibXR::Thread::Priority::REALTIME);
+    app.Register(*this);
+  }
+
+  /**
+   * @brief 外部监控入口。
+   *
+   * 控制周期由内部线程负责，因此这里保持为空。
+   */
+  void OnMonitor() override {}
+
+ private:
+  /**
+   * @brief 注册所有输入 topic 回调。
+   */
+  void RegisterTopicCallbacks()
   {
     auto gyro_cb = LibXR::Topic::Callback::Create(
         [](bool, WebotsGimbal *self, LibXR::RawData &data)
         {
-          const auto gyro = *static_cast<GyroStamped *>(data.addr_);
-          self->pitch_rate_ = gyro.angular_velocity_xyz[1];
-          self->yaw_rate_ = gyro.angular_velocity_xyz[2];
-          self->have_gyro_ = true;
-          self->UpdateTorque();
+          self->HandleGyroSample(data);
         },
         this);
     gyro_topic_.RegisterCallback(gyro_cb);
@@ -93,12 +303,7 @@ class WebotsGimbal : public LibXR::Application
     auto rotation_cb = LibXR::Topic::Callback::Create(
         [](bool, WebotsGimbal *self, LibXR::RawData &data)
         {
-          const auto rotation = *static_cast<LibXR::Quaternion<float> *>(data.addr_);
-          const auto euler = rotation.ToEulerAngleZYX();
-          self->current_pitch_ = euler[1];
-          self->current_yaw_ = euler[2];
-          self->have_rotation_ = true;
-          self->UpdateTorque();
+          self->HandleRotationSample(data);
         },
         this);
     gimbal_rotation_topic_.RegisterCallback(rotation_cb);
@@ -106,43 +311,7 @@ class WebotsGimbal : public LibXR::Application
     auto plan_cb = LibXR::Topic::Callback::Create(
         [](bool, WebotsGimbal *self, LibXR::RawData &data)
         {
-          const auto plan = *static_cast<GimbalPlan *>(data.addr_);
-          if (!plan.control)
-          {
-            self->have_plan_ = false;
-            self->target_pitch_vel_ = 0.0f;
-            self->target_yaw_vel_ = 0.0f;
-            self->target_pitch_acc_ = 0.0f;
-            self->target_yaw_acc_ = 0.0f;
-            return;
-          }
-
-          if (!std::isfinite(plan.pitch) || !std::isfinite(plan.yaw) ||
-              !std::isfinite(plan.pitch_vel) || !std::isfinite(plan.yaw_vel))
-          {
-            XR_LOG_WARN("WebotsGimbal ignored non-finite gimbal_plan");
-            return;
-          }
-
-          if (!self->have_plan_)
-          {
-            XR_LOG_INFO(
-                "WebotsGimbal first gimbal_plan pitch=%f yaw=%f pitch_vel=%f yaw_vel=%f",
-                static_cast<double>(plan.pitch), static_cast<double>(plan.yaw),
-                static_cast<double>(plan.pitch_vel),
-                static_cast<double>(plan.yaw_vel));
-          }
-
-          self->target_pitch_ = plan.pitch;
-          self->target_yaw_ = plan.yaw;
-          self->target_pitch_vel_ = plan.pitch_vel;
-          self->target_yaw_vel_ = plan.yaw_vel;
-          self->target_pitch_acc_ = plan.pitch_acc;
-          self->target_yaw_acc_ = plan.yaw_acc;
-          self->have_plan_ = true;
-          self->have_target_ = true;
-          self->EnableMotors();
-          self->UpdateTorque();
+          self->HandleGimbalPlan(data);
         },
         this);
     gimbal_plan_topic_.RegisterCallback(plan_cb);
@@ -150,51 +319,225 @@ class WebotsGimbal : public LibXR::Application
     auto target_cb = LibXR::Topic::Callback::Create(
         [](bool, WebotsGimbal *self, LibXR::RawData &data)
         {
-          const auto target = *static_cast<LibXR::EulerAngle<float> *>(data.addr_);
-          if (!std::isfinite(target.Yaw()))
-          {
-            XR_LOG_WARN("WebotsGimbal ignored non-finite target_eulr yaw=%f",
-                        static_cast<double>(target.Yaw()));
-            return;
-          }
-
-          if (!self->have_target_ && std::abs(target.Pitch()) < 1e-6f &&
-              std::abs(target.Yaw()) < 1e-6f)
-          {
-            return;
-          }
-
-          if (self->have_plan_)
-          {
-            return;
-          }
-
-          if (!self->have_target_)
-          {
-            XR_LOG_INFO("WebotsGimbal first target_eulr pitch=%f yaw=%f",
-                        static_cast<double>(target.Pitch()),
-                        static_cast<double>(target.Yaw()));
-          }
-
-          self->target_pitch_ = target.Pitch();
-          self->target_yaw_ = target.Yaw();
-          self->target_pitch_vel_ = 0.0f;
-          self->target_yaw_vel_ = 0.0f;
-          self->target_pitch_acc_ = 0.0f;
-          self->target_yaw_acc_ = 0.0f;
-          self->have_target_ = true;
-          self->EnableMotors();
-          self->UpdateTorque();
+          self->HandleTargetEuler(data);
         },
         this);
     target_eulr_topic_.RegisterCallback(target_cb);
-
-    app.Register(*this);
   }
 
-  void OnMonitor() override {}
+  /**
+   * @brief 固定周期控制线程入口。
+   * @param self 当前控制器对象。
+   */
+  static void ControlThread(WebotsGimbal *self)
+  {
+    LibXR::MillisecondTimestamp last_wakeup = LibXR::Thread::GetTime();
+    while (true)
+    {
+      self->ControlStep();
+      LibXR::Thread::SleepUntil(last_wakeup, self->control_period_ms_);
+    }
+  }
 
- private:
+  /**
+   * @brief 处理陀螺仪原始数据。
+   * @param data topic 原始负载，期望为 3 个 float。
+   */
+  void HandleGyroSample(LibXR::RawData &data)
+  {
+    GyroSample gyro{};
+    if (data.addr_ == nullptr || data.size_ != sizeof(gyro))
+    {
+      return;
+    }
+
+    std::memcpy(gyro.data(), data.addr_, sizeof(gyro));
+
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    feedback_.pitch_rate = gyro[1];
+    feedback_.yaw_rate = gyro[2];
+    feedback_.has_gyro = true;
+  }
+
+  /**
+   * @brief 处理云台姿态反馈。
+   * @param data topic 原始负载，期望为 `LibXR::Quaternion<float>`。
+   */
+  void HandleRotationSample(LibXR::RawData &data)
+  {
+    if (data.addr_ == nullptr ||
+        data.size_ != sizeof(LibXR::Quaternion<float>))
+    {
+      return;
+    }
+
+    const auto rotation = *static_cast<LibXR::Quaternion<float> *>(data.addr_);
+    const auto euler = rotation.ToEulerAngleZYX();
+
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    feedback_.pitch = euler[1];
+    feedback_.yaw = LimitRad(euler[2] + YAW_FORWARD_OFFSET_RAD);
+    feedback_.has_rotation = true;
+  }
+
+  /**
+   * @brief 处理带速度和加速度前馈的云台计划。
+   * @param data topic 原始负载，期望为 `GimbalPlan`。
+   */
+  void HandleGimbalPlan(LibXR::RawData &data)
+  {
+    if (data.addr_ == nullptr || data.size_ != sizeof(GimbalPlan))
+    {
+      return;
+    }
+
+    const auto plan = *static_cast<GimbalPlan *>(data.addr_);
+
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    plan_topic_seen_ = true;
+    if (!plan.control)
+    {
+      ClearTargetCommandLocked();
+      return;
+    }
+
+    if (!IsFinite(plan))
+    {
+      XR_LOG_WARN("WebotsGimbal ignored non-finite gimbal_plan");
+      return;
+    }
+
+    if (!target_command_.from_plan)
+    {
+      XR_LOG_INFO(
+          "WebotsGimbal first gimbal_plan pitch=%f yaw=%f pitch_vel=%f yaw_vel=%f",
+          static_cast<double>(plan.pitch), static_cast<double>(plan.yaw),
+          static_cast<double>(plan.pitch_vel),
+          static_cast<double>(plan.yaw_vel));
+    }
+
+    target_command_.valid = true;
+    target_command_.from_plan = true;
+    target_command_.pitch = plan.pitch;
+    target_command_.yaw = plan.yaw;
+    target_command_.pitch_vel = plan.pitch_vel;
+    target_command_.yaw_vel = plan.yaw_vel;
+    target_command_.pitch_acc = plan.pitch_acc;
+    target_command_.yaw_acc = plan.yaw_acc;
+  }
+
+  /**
+   * @brief 处理兼容角度目标。
+   * @param data topic 原始负载，期望为 `LibXR::EulerAngle<float>`。
+   *
+   * 一旦收到过 `gimbal_plan`，该兼容入口不再接管控制。
+   */
+  void HandleTargetEuler(LibXR::RawData &data)
+  {
+    if (data.addr_ == nullptr ||
+        data.size_ != sizeof(LibXR::EulerAngle<float>))
+    {
+      return;
+    }
+
+    const auto target = *static_cast<LibXR::EulerAngle<float> *>(data.addr_);
+    if (!std::isfinite(target.Pitch()) || !std::isfinite(target.Yaw()))
+    {
+      XR_LOG_WARN("WebotsGimbal ignored non-finite target_eulr pitch=%f yaw=%f",
+                  static_cast<double>(target.Pitch()),
+                  static_cast<double>(target.Yaw()));
+      return;
+    }
+
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (!target_command_.valid && std::abs(target.Pitch()) < 1e-6f &&
+        std::abs(target.Yaw()) < 1e-6f)
+    {
+      return;
+    }
+
+    if (plan_topic_seen_)
+    {
+      return;
+    }
+
+    if (!target_command_.valid)
+    {
+      XR_LOG_INFO("WebotsGimbal first target_eulr pitch=%f yaw=%f",
+                  static_cast<double>(target.Pitch()),
+                  static_cast<double>(target.Yaw()));
+    }
+
+    target_command_.valid = true;
+    target_command_.from_plan = false;
+    target_command_.pitch = target.Pitch();
+    target_command_.yaw = target.Yaw();
+    target_command_.pitch_vel = 0.0f;
+    target_command_.yaw_vel = 0.0f;
+    target_command_.pitch_acc = 0.0f;
+    target_command_.yaw_acc = 0.0f;
+  }
+
+  /**
+   * @brief 拷贝控制线程本周期使用的输入快照。
+   * @return 当前目标、反馈和复位请求。
+   */
+  ControlSnapshot TakeControlSnapshot()
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    ControlSnapshot snapshot{};
+    snapshot.target = target_command_;
+    snapshot.feedback = feedback_;
+    snapshot.reset_requested = control_reset_requested_;
+    control_reset_requested_ = false;
+    return snapshot;
+  }
+
+  /**
+   * @brief 执行一次 1ms 控制周期。
+   */
+  void ControlStep()
+  {
+    const auto snapshot = TakeControlSnapshot();
+    if (snapshot.reset_requested)
+    {
+      StopTorqueOutput();
+      ResetControlTimeline();
+    }
+
+    if (!snapshot.target.valid || !snapshot.feedback.has_rotation)
+    {
+      StopTorqueOutput();
+      return;
+    }
+
+    if (!motors_enabled_)
+    {
+      EnableMotors();
+    }
+
+    const auto now = LibXR::Timebase::GetMicroseconds();
+    if (!have_last_control_time_)
+    {
+      last_control_time_ = now;
+      have_last_control_time_ = true;
+      ResetControlState();
+      return;
+    }
+
+    const float dt = (now - last_control_time_).ToSecondf();
+    last_control_time_ = now;
+    if (!std::isfinite(dt) || dt <= 0.0f)
+    {
+      return;
+    }
+
+    UpdateTorque(snapshot, dt);
+  }
+
+  /**
+   * @brief 第一次接管控制时把 Webots 电机切到力矩模式。
+   */
   void EnableMotors()
   {
     if (motors_enabled_)
@@ -205,56 +548,145 @@ class WebotsGimbal : public LibXR::Application
     for (size_t i = 0; i < static_cast<size_t>(MotorType::NUMBER); i++)
     {
       motors_[i] = _libxr_webots_robot_handle->getMotor(MOTOR_NAMES[i]);
-      // 不使用 setPosition(0) 或目标角位置控制：当前 world 的电机零位
-      // 与相机正确初始视角不一致，位置伺服会把画面直接拉飞。
+      // 当前 world 的关节零位和相机初始视角不一致，所以不能用绝对位置伺服。
       motors_[i]->setPosition(std::numeric_limits<double>::infinity());
       motors_[i]->setTorque(0.0);
     }
     motors_enabled_ = true;
+    torque_output_active_ = false;
+    ResetControlState();
   }
 
-  void UpdateTorque()
+  /**
+   * @brief 根据输入快照计算并输出两轴电机力矩。
+   * @param snapshot 控制输入快照。
+   * @param dt 本次控制周期时长，单位 s。
+   */
+  void UpdateTorque(const ControlSnapshot &snapshot, float dt)
   {
-    if (!motors_enabled_ || !have_target_ || !have_rotation_)
-    {
-      return;
-    }
+    const auto &target = snapshot.target;
+    const auto &feedback = snapshot.feedback;
+    const float pitch_rate = feedback.has_gyro ? feedback.pitch_rate : 0.0f;
+    const float yaw_rate = feedback.has_gyro ? feedback.yaw_rate : 0.0f;
+    const float target_pitch_vel = target.from_plan ? target.pitch_vel : 0.0f;
+    const float target_yaw_vel = target.from_plan ? target.yaw_vel : 0.0f;
+    const float target_pitch_acc = target.from_plan ? target.pitch_acc : 0.0f;
+    const float target_yaw_acc = target.from_plan ? target.yaw_acc : 0.0f;
+    const float pitch_error = LimitRad(target.pitch - feedback.pitch);
+    const float yaw_error = LimitRad(target.yaw - feedback.yaw);
 
-    const float pitch_error = LimitRad(target_pitch_ - current_pitch_);
-    const float yaw_error = LimitRad(target_yaw_ - current_yaw_);
-    const float pitch_rate = have_gyro_ ? pitch_rate_ : 0.0f;
-    const float yaw_rate = have_gyro_ ? yaw_rate_ : 0.0f;
-    const float target_pitch_vel = have_plan_ ? target_pitch_vel_ : 0.0f;
-    const float target_yaw_vel = have_plan_ ? target_yaw_vel_ : 0.0f;
-    // 当前 world 标定结果：pitch motor 正力矩会让发布系 pitch 变小，
-    // 因此 P/D 项符号与 yaw 轴相反。
+    const float target_pitch_omega =
+        pid_pitch_angle_.Calculate(pitch_error, 0.0f, dt) + target_pitch_vel;
+    const float target_yaw_omega =
+        pid_yaw_angle_.Calculate(yaw_error, 0.0f, dt) + target_yaw_vel;
+
+    // PID 微分项是反馈项；不要对角度环生成的目标速度再差分后当成前馈加速度。
+    const float pitch_feed_forward =
+        pitch_inertia_ * target_pitch_acc +
+        PitchGravityCompensation(feedback.pitch) +
+        FrictionCompensation(target_pitch_omega, pitch_rate, PITCH_COULOMB_TORQUE,
+                             PITCH_VISCOUS_TORQUE);
+    const float yaw_feed_forward =
+        yaw_inertia_ * target_yaw_acc +
+        FrictionCompensation(target_yaw_omega, yaw_rate, YAW_COULOMB_TORQUE,
+                             YAW_VISCOUS_TORQUE);
+    pid_pitch_omega_.SetFeedForward(pitch_feed_forward);
+    pid_yaw_omega_.SetFeedForward(yaw_feed_forward);
+
+    // 当前 world 标定结果：pitch 电机正力矩会让发布坐标系的 pitch 变小。
     const float pitch_torque =
-        Clamp(-PITCH_KP * pitch_error + PITCH_KD * pitch_rate -
-                  PITCH_KV_FF * target_pitch_vel - PITCH_KA_FF * target_pitch_acc_,
-              -PITCH_MAX_TORQUE, PITCH_MAX_TORQUE);
+        Clamp(PITCH_TORQUE_SIGN *
+                  pid_pitch_omega_.Calculate(target_pitch_omega, pitch_rate, dt),
+              -pitch_torque_limit_, pitch_torque_limit_);
     const float yaw_torque =
-        Clamp(YAW_KP * yaw_error - YAW_KD * yaw_rate +
-                  YAW_KV_FF * target_yaw_vel + YAW_KA_FF * target_yaw_acc_,
-              -YAW_MAX_TORQUE, YAW_MAX_TORQUE);
+        Clamp(YAW_TORQUE_SIGN *
+                  pid_yaw_omega_.Calculate(target_yaw_omega, yaw_rate, dt),
+              -yaw_torque_limit_, yaw_torque_limit_);
 
     motors_[static_cast<size_t>(MotorType::PITCH)]->setTorque(pitch_torque);
     motors_[static_cast<size_t>(MotorType::YAW)]->setTorque(yaw_torque);
+    torque_output_active_ = true;
 
     command_count_++;
-    if ((command_count_ % 3000U) == 0U)
+    if (log_interval_ != 0U && (command_count_ % log_interval_) == 0U)
     {
       XR_LOG_INFO(
-          "WebotsGimbal torque cmd=%u plan=%d pitch_err=%f yaw_err=%f pitch_rate=%f yaw_rate=%f target_pitch_vel=%f target_yaw_vel=%f target_pitch_acc=%f target_yaw_acc=%f pitch_torque=%f yaw_torque=%f",
-          command_count_, have_plan_ ? 1 : 0, static_cast<double>(pitch_error),
-          static_cast<double>(yaw_error), static_cast<double>(pitch_rate),
-          static_cast<double>(yaw_rate), static_cast<double>(target_pitch_vel),
-          static_cast<double>(target_yaw_vel),
-          static_cast<double>(target_pitch_acc_),
-          static_cast<double>(target_yaw_acc_), static_cast<double>(pitch_torque),
+          "WebotsGimbal ctrl c=%u p=%d dt=%.4f py=%.4f pyv=%.4f pya=%.2f yy=%.4f yyv=%.4f yya=%.2f fp=%.4f fy=%.4f ep=%.4f ey=%.4f rp=%.3f ry=%.3f op=%.3f oy=%.3f tp=%.4f ty=%.4f",
+          command_count_, target.from_plan ? 1 : 0, static_cast<double>(dt),
+          static_cast<double>(target.pitch),
+          static_cast<double>(target_pitch_vel),
+          static_cast<double>(target_pitch_acc),
+          static_cast<double>(target.yaw), static_cast<double>(target_yaw_vel),
+          static_cast<double>(target_yaw_acc),
+          static_cast<double>(feedback.pitch), static_cast<double>(feedback.yaw),
+          static_cast<double>(pitch_error), static_cast<double>(yaw_error),
+          static_cast<double>(pitch_rate), static_cast<double>(yaw_rate),
+          static_cast<double>(target_pitch_omega),
+          static_cast<double>(target_yaw_omega),
+          static_cast<double>(pitch_torque),
           static_cast<double>(yaw_torque));
     }
   }
 
+  /**
+   * @brief 复位 PID 内部状态和前馈项。
+   */
+  void ResetControlState()
+  {
+    pid_pitch_angle_.Reset();
+    pid_pitch_omega_.Reset();
+    pid_yaw_angle_.Reset();
+    pid_yaw_omega_.Reset();
+    pid_pitch_omega_.SetFeedForward(0.0f);
+    pid_yaw_omega_.SetFeedForward(0.0f);
+  }
+
+  /**
+   * @brief 清空当前目标命令并请求控制线程复位。
+   *
+   * 调用方必须已经持有 `state_mutex_`。
+   */
+  void ClearTargetCommandLocked()
+  {
+    target_command_ = {};
+    control_reset_requested_ = true;
+  }
+
+  /**
+   * @brief 清空控制时间轴并复位控制器状态。
+   */
+  void ResetControlTimeline()
+  {
+    have_last_control_time_ = false;
+    ResetControlState();
+  }
+
+  /**
+   * @brief 停止输出电机力矩。
+   */
+  void StopTorqueOutput()
+  {
+    const bool should_reset = have_last_control_time_ || torque_output_active_;
+    if (motors_enabled_ && torque_output_active_)
+    {
+      motors_[static_cast<size_t>(MotorType::PITCH)]->setTorque(0.0);
+      motors_[static_cast<size_t>(MotorType::YAW)]->setTorque(0.0);
+      torque_output_active_ = false;
+    }
+
+    if (should_reset)
+    {
+      ResetControlTimeline();
+    }
+  }
+
+  /**
+   * @brief 将数值限制在闭区间内。
+   * @param value 输入值。
+   * @param min_value 最小值。
+   * @param max_value 最大值。
+   * @return 限幅后的值。
+   */
   static float Clamp(float value, float min_value, float max_value)
   {
     if (value < min_value)
@@ -268,6 +700,11 @@ class WebotsGimbal : public LibXR::Application
     return value;
   }
 
+  /**
+   * @brief 将角度归一化到 [-pi, pi]。
+   * @param angle 输入角度，单位 rad。
+   * @return 归一化后的角度，单位 rad。
+   */
   static float LimitRad(float angle)
   {
     while (angle > static_cast<float>(M_PI))
@@ -281,30 +718,96 @@ class WebotsGimbal : public LibXR::Application
     return angle;
   }
 
-  webots::Motor *motors_[static_cast<size_t>(MotorType::NUMBER)]{};
-  bool motors_enabled_{false};
-  bool have_target_{false};
-  bool have_plan_{false};
-  bool have_rotation_{false};
-  bool have_gyro_{false};
-  uint32_t command_count_{0};
-  float target_pitch_{0.0f};
-  float target_yaw_{0.0f};
-  float current_pitch_{0.0f};
-  float current_yaw_{0.0f};
-  float pitch_rate_{0.0f};
-  float yaw_rate_{0.0f};
-  float target_pitch_vel_{0.0f};
-  float target_yaw_vel_{0.0f};
-  float target_pitch_acc_{0.0f};
-  float target_yaw_acc_{0.0f};
+  /**
+   * @brief 计算 pitch 轴固定重力补偿力矩。
+   * @param pitch 当前 pitch 角，单位 rad。
+   * @return 重力补偿力矩，单位 Nm。
+   */
+  static float PitchGravityCompensation(float pitch)
+  {
+    return -PITCH_GRAVITY_TORQUE * std::cos(pitch + PITCH_GRAVITY_OFFSET);
+  }
 
-  LibXR::Topic gyro_topic_ = LibXR::Topic::FindOrCreate<GyroStamped>("camera_gyro");
+  /**
+   * @brief 计算库伦摩擦和粘滞摩擦补偿。
+   * @param target_omega 目标角速度，单位 rad/s。
+   * @param measured_omega 实测角速度，单位 rad/s。
+   * @param coulomb_torque 库伦摩擦补偿幅值，单位 Nm。
+   * @param viscous_torque 粘滞摩擦补偿系数。
+   * @return 摩擦补偿力矩，单位 Nm。
+   */
+  static float FrictionCompensation(float target_omega, float measured_omega,
+                                    float coulomb_torque, float viscous_torque)
+  {
+    float direction = 0.0f;
+    if (std::abs(target_omega) > FRICTION_DEADBAND_RAD_S)
+    {
+      direction = target_omega > 0.0f ? 1.0f : -1.0f;
+    }
+    else if (std::abs(measured_omega) > FRICTION_DEADBAND_RAD_S)
+    {
+      direction = measured_omega > 0.0f ? 1.0f : -1.0f;
+    }
+
+    return coulomb_torque * direction + viscous_torque * target_omega;
+  }
+
+  /**
+   * @brief 检查云台计划中的控制量是否全为有限值。
+   * @param plan 待检查的云台计划。
+   * @return 全部控制量有限时返回 true。
+   */
+  static bool IsFinite(const GimbalPlan &plan)
+  {
+    return std::isfinite(plan.pitch) && std::isfinite(plan.yaw) &&
+           std::isfinite(plan.pitch_vel) && std::isfinite(plan.yaw_vel) &&
+           std::isfinite(plan.pitch_acc) && std::isfinite(plan.yaw_acc);
+  }
+
+  std::mutex state_mutex_{};  ///< 保护 topic 回调写入的最新输入状态。
+  TargetCommand target_command_{};  ///< 最新目标命令。
+  FeedbackState feedback_{};        ///< 最新云台反馈。
+  bool plan_topic_seen_{false};  ///< 是否已经收到过 `gimbal_plan` topic。
+  bool control_reset_requested_{false};  ///< 是否请求控制线程复位。
+
+  webots::Motor *motors_[static_cast<size_t>(
+      MotorType::NUMBER)]{};       ///< pitch/yaw 两轴 Webots 电机指针。
+  bool motors_enabled_{false};     ///< 电机是否已经切入力矩模式。
+  bool torque_output_active_{false};  ///< 当前是否正在输出非空控制力矩。
+  uint32_t command_count_{0};        ///< 已输出控制命令计数。
+  LibXR::MicrosecondTimestamp last_control_time_{0};  ///< 上次控制时间。
+  bool have_last_control_time_{false};  ///< 是否已有有效上次控制时间。
+  LibXR::PID<float> pid_pitch_angle_;   ///< pitch 角度环 PID。
+  LibXR::PID<float> pid_pitch_omega_;   ///< pitch 角速度环 PID。
+  LibXR::PID<float> pid_yaw_angle_;     ///< yaw 角度环 PID。
+  LibXR::PID<float> pid_yaw_omega_;     ///< yaw 角速度环 PID。
+  float pitch_inertia_{0.00012f};       ///< pitch 轴惯量前馈系数。
+  float yaw_inertia_{0.0002f};          ///< yaw 轴惯量前馈系数。
+  float pitch_torque_limit_{0.035f};    ///< pitch 力矩限幅，单位 Nm。
+  float yaw_torque_limit_{0.04f};       ///< yaw 力矩限幅，单位 Nm。
+  uint32_t control_period_ms_{1};       ///< 控制线程周期，单位 ms。
+  uint32_t log_interval_{1000};         ///< 周期日志间隔。
+  LibXR::Thread control_thread_{};      ///< 固定周期控制线程。
+
+  /** @brief 原始数据 topic 域。 */
+  LibXR::Topic::Domain raw_topic_domain_ =
+      LibXR::Topic::Domain("libxr_def_domain");
+  /** @brief 相机陀螺仪 topic。 */
+  LibXR::Topic gyro_topic_ =
+      LibXR::Topic::FindOrCreate<GyroSample>("camera_gyro", &raw_topic_domain_);
+  /** @brief tracker topic 域。 */
+  LibXR::Topic::Domain tracker_domain_ = LibXR::Topic::Domain("tracker");
+  /** @brief 兼容角度目标 topic。 */
   LibXR::Topic target_eulr_topic_ =
-      LibXR::Topic::FindOrCreate<LibXR::EulerAngle<float>>("target_eulr");
+      LibXR::Topic::FindOrCreate<LibXR::EulerAngle<float>>("target_eulr",
+                                                           &tracker_domain_);
+  /** @brief 云台计划 topic。 */
   LibXR::Topic gimbal_plan_topic_ =
-      LibXR::Topic::FindOrCreate<GimbalPlan>("gimbal_plan");
+      LibXR::Topic::FindOrCreate<GimbalPlan>("gimbal_plan", &tracker_domain_);
+  /** @brief 云台反馈 topic 域。 */
   LibXR::Topic::Domain gimbal_domain_ = LibXR::Topic::Domain("gimbal");
+  /** @brief 云台姿态反馈 topic。 */
   LibXR::Topic gimbal_rotation_topic_ =
-      LibXR::Topic::FindOrCreate<LibXR::Quaternion<float>>("rotation", &gimbal_domain_);
+      LibXR::Topic::FindOrCreate<LibXR::Quaternion<float>>("rotation",
+                                                           &gimbal_domain_);
 };
