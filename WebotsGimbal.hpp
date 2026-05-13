@@ -182,8 +182,8 @@ class WebotsGimbal : public LibXR::Application
       0.004f;  ///< yaw 粘滞摩擦补偿系数。
   static constexpr float FRICTION_DEADBAND_RAD_S =
       0.02f;  ///< 摩擦方向判定死区，单位 rad/s。
-  static constexpr float YAW_FORWARD_OFFSET_RAD =
-      static_cast<float>(M_PI / 2.0);  ///< 从右轴 yaw 转为前轴 yaw 的偏移。
+  static constexpr float YAW_SENSOR_TO_COMMAND_OFFSET_RAD =
+      static_cast<float>(M_PI / 2.0);  ///< Webots 传感器 yaw 到命令 yaw 的偏移。
 
  public:
   /**
@@ -357,7 +357,7 @@ class WebotsGimbal : public LibXR::Application
 
     std::lock_guard<std::mutex> lock(state_mutex_);
     feedback_.pitch = euler[1];
-    feedback_.yaw = LimitRad(euler[2] + YAW_FORWARD_OFFSET_RAD);
+    feedback_.yaw = LimitRad(euler[2] + YAW_SENSOR_TO_COMMAND_OFFSET_RAD);
     feedback_.has_rotation = true;
   }
 
