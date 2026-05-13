@@ -168,10 +168,6 @@ class WebotsGimbal : public LibXR::Application
       "target_motor_yaw"};  ///< Webots world 中的 pitch/yaw 电机名。
   static constexpr float PITCH_TORQUE_SIGN = 1.0f;   ///< pitch 力矩方向标定。
   static constexpr float YAW_TORQUE_SIGN = 1.0f;     ///< yaw 力矩方向标定。
-  static constexpr float PITCH_GRAVITY_TORQUE =
-      0.012f;  ///< pitch 固定重力补偿幅值，单位 Nm。
-  static constexpr float PITCH_GRAVITY_OFFSET =
-      0.0f;  ///< pitch 重力补偿角度偏置，单位 rad。
   static constexpr float PITCH_COULOMB_TORQUE =
       0.0008f;  ///< pitch 库伦摩擦补偿幅值，单位 Nm。
   static constexpr float PITCH_VISCOUS_TORQUE =
@@ -511,7 +507,6 @@ class WebotsGimbal : public LibXR::Application
     // PID 微分项是反馈项；不要对角度环生成的目标速度再差分后当成前馈加速度。
     const float pitch_feed_forward =
         pitch_inertia_ * target_pitch_acc +
-        PitchGravityCompensation(feedback.pitch) +
         FrictionCompensation(target_pitch_omega, pitch_rate, PITCH_COULOMB_TORQUE,
                              PITCH_VISCOUS_TORQUE);
     const float yaw_feed_forward =
@@ -644,16 +639,6 @@ class WebotsGimbal : public LibXR::Application
       angle += static_cast<float>(2.0 * M_PI);
     }
     return angle;
-  }
-
-  /**
-   * @brief 计算 pitch 轴固定重力补偿力矩。
-   * @param pitch 当前 pitch 角，单位 rad。
-   * @return 重力补偿力矩，单位 Nm。
-   */
-  static float PitchGravityCompensation(float pitch)
-  {
-    return -PITCH_GRAVITY_TORQUE * std::cos(pitch + PITCH_GRAVITY_OFFSET);
   }
 
   /**
