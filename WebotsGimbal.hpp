@@ -52,7 +52,7 @@ depends: []
  * @file WebotsGimbal.hpp
  * @brief Webots 云台力矩控制模块。
  *
- * 本模块模拟云台下位机：接收瞄准角度/轨迹、读取 Webots 相机姿态和角速度，
+ * 本模块模拟云台下位机：接收 host/target_euler、读取 Webots 相机姿态和角速度，
  * 在独立 1ms 控制线程中输出 pitch/yaw 两轴电机力矩。
  */
 
@@ -68,33 +68,24 @@ depends: []
 #include <mutex>
 
 #include "app_framework.hpp"
-#if __has_include("GimbalPlan.hpp")
-#include "GimbalPlan.hpp"
-#else
-#ifndef QDU_GIMBAL_PLAN_HPP
-#define QDU_GIMBAL_PLAN_HPP
 /**
- * @brief 云台轨迹消息的本地兜底定义。
- *
- * 正常工程中该类型由上游模块提供；这里保留同布局兜底定义，保证模块可以在
- * 最小化构建环境中独立编译。
+ * @brief DevC HostData 接收的云台目标载荷。
  */
-struct GimbalPlan
+struct WebotsHostGimbalTarget
 {
-  uint64_t image_timestamp_us{0};  ///< 对应图像帧时间戳，单位 us。
-  bool control{false};             ///< 是否接管云台控制。
-  bool fire{false};                ///< 上游开火建议，本模块不直接使用。
-  float target_yaw{0.0f};          ///< 兼容字段：目标 yaw。
-  float target_pitch{0.0f};        ///< 兼容字段：目标 pitch。
-  float yaw{0.0f};                 ///< 计划 yaw 角。
-  float yaw_vel{0.0f};             ///< 计划 yaw 角速度。
-  float yaw_acc{0.0f};             ///< 计划 yaw 角加速度。
-  float pitch{0.0f};               ///< 计划 pitch 角。
-  float pitch_vel{0.0f};           ///< 计划 pitch 角速度。
-  float pitch_acc{0.0f};           ///< 计划 pitch 角加速度。
+  float rol{0.0f};       ///< roll 命令，单位 rad。
+  float pit{0.0f};       ///< pitch 命令，单位 rad。
+  float yaw{0.0f};       ///< yaw 命令，单位 rad。
+  float rol_dot{0.0f};   ///< roll 速度前馈，单位 rad/s。
+  float pit_dot{0.0f};   ///< pitch 速度前馈，单位 rad/s。
+  float yaw_dot{0.0f};   ///< yaw 速度前馈，单位 rad/s。
+  float rol_ddot{0.0f};  ///< roll 加速度前馈，单位 rad/s^2。
+  float pit_ddot{0.0f};  ///< pitch 加速度前馈，单位 rad/s^2。
+  float yaw_ddot{0.0f};  ///< yaw 加速度前馈，单位 rad/s^2。
 };
-#endif  // QDU_GIMBAL_PLAN_HPP
-#endif
+
+static_assert(sizeof(WebotsHostGimbalTarget) == sizeof(float) * 9);
+
 #include "libxr.hpp"
 #include "logger.hpp"
 #include "message.hpp"
@@ -121,13 +112,11 @@ class WebotsGimbal : public LibXR::Application
   /**
    * @brief 当前有效目标命令。
    *
-   * 该结构只保存控制线程需要的目标角、目标角速度和目标角加速度。若命令来自
-   * 兼容 `target_eulr`，速度和加速度按 0 处理。
+   * 该结构只保存控制线程需要的目标角、目标角速度和目标角加速度。
    */
   struct TargetCommand
   {
     bool valid{false};      ///< 当前是否有可执行目标。
-    bool from_plan{false};  ///< 当前目标是否来自 `gimbal_plan`。
     float pitch{0.0f};      ///< 目标 pitch 角，单位 rad。
     float yaw{0.0f};        ///< 目标 yaw 角，单位 rad。
     float pitch_vel{0.0f};  ///< 计划 pitch 角速度，单位 rad/s。
@@ -308,21 +297,13 @@ class WebotsGimbal : public LibXR::Application
         this);
     gimbal_rotation_topic_.RegisterCallback(rotation_cb);
 
-    auto plan_cb = LibXR::Topic::Callback::Create(
-        [](bool, WebotsGimbal *self, LibXR::RawData &data)
-        {
-          self->HandleGimbalPlan(data);
-        },
-        this);
-    gimbal_plan_topic_.RegisterCallback(plan_cb);
-
     auto target_cb = LibXR::Topic::Callback::Create(
         [](bool, WebotsGimbal *self, LibXR::RawData &data)
         {
-          self->HandleTargetEuler(data);
+          self->HandleHostGimbalTarget(data);
         },
         this);
-    target_eulr_topic_.RegisterCallback(target_cb);
+    host_gimbal_target_topic_.RegisterCallback(target_cb);
   }
 
   /**
@@ -381,101 +362,48 @@ class WebotsGimbal : public LibXR::Application
   }
 
   /**
-   * @brief 处理带速度和加速度前馈的云台计划。
-   * @param data topic 原始负载，期望为 `GimbalPlan`。
+   * @brief 处理 host/target_euler 云台目标。
+   * @param data topic 原始负载，期望为 `WebotsHostGimbalTarget`。
    */
-  void HandleGimbalPlan(LibXR::RawData &data)
+  void HandleHostGimbalTarget(LibXR::RawData &data)
   {
-    if (data.addr_ == nullptr || data.size_ != sizeof(GimbalPlan))
+    if (data.addr_ == nullptr || data.size_ != sizeof(WebotsHostGimbalTarget))
     {
       return;
     }
 
-    const auto plan = *static_cast<GimbalPlan *>(data.addr_);
+    WebotsHostGimbalTarget target{};
+    std::memcpy(&target, data.addr_, sizeof(target));
 
     std::lock_guard<std::mutex> lock(state_mutex_);
-    plan_topic_seen_ = true;
-    if (!plan.control)
+    if (std::abs(target.pit) < 1e-6f && std::abs(target.yaw) < 1e-6f)
     {
       ClearTargetCommandLocked();
       return;
     }
 
-    if (!IsFinite(plan))
+    if (!IsFinite(target))
     {
-      XR_LOG_WARN("WebotsGimbal ignored non-finite gimbal_plan");
-      return;
-    }
-
-    if (!target_command_.from_plan)
-    {
-      XR_LOG_INFO(
-          "WebotsGimbal first gimbal_plan pitch=%f yaw=%f pitch_vel=%f yaw_vel=%f",
-          static_cast<double>(plan.pitch), static_cast<double>(plan.yaw),
-          static_cast<double>(plan.pitch_vel),
-          static_cast<double>(plan.yaw_vel));
-    }
-
-    target_command_.valid = true;
-    target_command_.from_plan = true;
-    target_command_.pitch = plan.pitch;
-    target_command_.yaw = plan.yaw;
-    target_command_.pitch_vel = plan.pitch_vel;
-    target_command_.yaw_vel = plan.yaw_vel;
-    target_command_.pitch_acc = plan.pitch_acc;
-    target_command_.yaw_acc = plan.yaw_acc;
-  }
-
-  /**
-   * @brief 处理兼容角度目标。
-   * @param data topic 原始负载，期望为 `LibXR::EulerAngle<float>`。
-   *
-   * 一旦收到过 `gimbal_plan`，该兼容入口不再接管控制。
-   */
-  void HandleTargetEuler(LibXR::RawData &data)
-  {
-    if (data.addr_ == nullptr ||
-        data.size_ != sizeof(LibXR::EulerAngle<float>))
-    {
-      return;
-    }
-
-    const auto target = *static_cast<LibXR::EulerAngle<float> *>(data.addr_);
-    if (!std::isfinite(target.Pitch()) || !std::isfinite(target.Yaw()))
-    {
-      XR_LOG_WARN("WebotsGimbal ignored non-finite target_eulr pitch=%f yaw=%f",
-                  static_cast<double>(target.Pitch()),
-                  static_cast<double>(target.Yaw()));
-      return;
-    }
-
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    if (!target_command_.valid && std::abs(target.Pitch()) < 1e-6f &&
-        std::abs(target.Yaw()) < 1e-6f)
-    {
-      return;
-    }
-
-    if (plan_topic_seen_)
-    {
+      XR_LOG_WARN("WebotsGimbal ignored non-finite host/target_euler");
       return;
     }
 
     if (!target_command_.valid)
     {
-      XR_LOG_INFO("WebotsGimbal first target_eulr pitch=%f yaw=%f",
-                  static_cast<double>(target.Pitch()),
-                  static_cast<double>(target.Yaw()));
+      XR_LOG_INFO(
+          "WebotsGimbal first host/target_euler pitch=%f yaw=%f pitch_vel=%f yaw_vel=%f",
+          static_cast<double>(target.pit), static_cast<double>(target.yaw),
+          static_cast<double>(target.pit_dot),
+          static_cast<double>(target.yaw_dot));
     }
 
     target_command_.valid = true;
-    target_command_.from_plan = false;
-    target_command_.pitch = target.Pitch();
-    target_command_.yaw = target.Yaw();
-    target_command_.pitch_vel = 0.0f;
-    target_command_.yaw_vel = 0.0f;
-    target_command_.pitch_acc = 0.0f;
-    target_command_.yaw_acc = 0.0f;
+    target_command_.pitch = target.pit;
+    target_command_.yaw = target.yaw;
+    target_command_.pitch_vel = target.pit_dot;
+    target_command_.yaw_vel = target.yaw_dot;
+    target_command_.pitch_acc = target.pit_ddot;
+    target_command_.yaw_acc = target.yaw_ddot;
   }
 
   /**
@@ -568,10 +496,10 @@ class WebotsGimbal : public LibXR::Application
     const auto &feedback = snapshot.feedback;
     const float pitch_rate = feedback.has_gyro ? feedback.pitch_rate : 0.0f;
     const float yaw_rate = feedback.has_gyro ? feedback.yaw_rate : 0.0f;
-    const float target_pitch_vel = target.from_plan ? target.pitch_vel : 0.0f;
-    const float target_yaw_vel = target.from_plan ? target.yaw_vel : 0.0f;
-    const float target_pitch_acc = target.from_plan ? target.pitch_acc : 0.0f;
-    const float target_yaw_acc = target.from_plan ? target.yaw_acc : 0.0f;
+    const float target_pitch_vel = target.pitch_vel;
+    const float target_yaw_vel = target.yaw_vel;
+    const float target_pitch_acc = target.pitch_acc;
+    const float target_yaw_acc = target.yaw_acc;
     const float pitch_error = LimitRad(target.pitch - feedback.pitch);
     const float yaw_error = LimitRad(target.yaw - feedback.yaw);
 
@@ -611,8 +539,8 @@ class WebotsGimbal : public LibXR::Application
     if (log_interval_ != 0U && (command_count_ % log_interval_) == 0U)
     {
       XR_LOG_INFO(
-          "WebotsGimbal ctrl c=%u p=%d dt=%.4f py=%.4f pyv=%.4f pya=%.2f yy=%.4f yyv=%.4f yya=%.2f fp=%.4f fy=%.4f ep=%.4f ey=%.4f rp=%.3f ry=%.3f op=%.3f oy=%.3f tp=%.4f ty=%.4f",
-          command_count_, target.from_plan ? 1 : 0, static_cast<double>(dt),
+          "WebotsGimbal ctrl c=%u dt=%.4f py=%.4f pyv=%.4f pya=%.2f yy=%.4f yyv=%.4f yya=%.2f fp=%.4f fy=%.4f ep=%.4f ey=%.4f rp=%.3f ry=%.3f op=%.3f oy=%.3f tp=%.4f ty=%.4f",
+          command_count_, static_cast<double>(dt),
           static_cast<double>(target.pitch),
           static_cast<double>(target_pitch_vel),
           static_cast<double>(target_pitch_acc),
@@ -753,21 +681,22 @@ class WebotsGimbal : public LibXR::Application
   }
 
   /**
-   * @brief 检查云台计划中的控制量是否全为有限值。
-   * @param plan 待检查的云台计划。
+   * @brief 检查 host 云台目标中的控制量是否全为有限值。
+   * @param target 待检查的云台目标。
    * @return 全部控制量有限时返回 true。
    */
-  static bool IsFinite(const GimbalPlan &plan)
+  static bool IsFinite(const WebotsHostGimbalTarget &target)
   {
-    return std::isfinite(plan.pitch) && std::isfinite(plan.yaw) &&
-           std::isfinite(plan.pitch_vel) && std::isfinite(plan.yaw_vel) &&
-           std::isfinite(plan.pitch_acc) && std::isfinite(plan.yaw_acc);
+    return std::isfinite(target.rol) && std::isfinite(target.pit) &&
+           std::isfinite(target.yaw) && std::isfinite(target.rol_dot) &&
+           std::isfinite(target.pit_dot) && std::isfinite(target.yaw_dot) &&
+           std::isfinite(target.rol_ddot) && std::isfinite(target.pit_ddot) &&
+           std::isfinite(target.yaw_ddot);
   }
 
   std::mutex state_mutex_{};  ///< 保护 topic 回调写入的最新输入状态。
   TargetCommand target_command_{};  ///< 最新目标命令。
   FeedbackState feedback_{};        ///< 最新云台反馈。
-  bool plan_topic_seen_{false};  ///< 是否已经收到过 `gimbal_plan` topic。
   bool control_reset_requested_{false};  ///< 是否请求控制线程复位。
 
   webots::Motor *motors_[static_cast<size_t>(
@@ -795,15 +724,12 @@ class WebotsGimbal : public LibXR::Application
   /** @brief 相机陀螺仪 topic。 */
   LibXR::Topic gyro_topic_ =
       LibXR::Topic::FindOrCreate<GyroSample>("camera_gyro", &raw_topic_domain_);
-  /** @brief tracker topic 域。 */
-  LibXR::Topic::Domain tracker_domain_ = LibXR::Topic::Domain("tracker");
-  /** @brief 兼容角度目标 topic。 */
-  LibXR::Topic target_eulr_topic_ =
-      LibXR::Topic::FindOrCreate<LibXR::EulerAngle<float>>("target_eulr",
-                                                           &tracker_domain_);
-  /** @brief 云台计划 topic。 */
-  LibXR::Topic gimbal_plan_topic_ =
-      LibXR::Topic::FindOrCreate<GimbalPlan>("gimbal_plan", &tracker_domain_);
+  /** @brief DevC host topic 域。 */
+  LibXR::Topic::Domain host_domain_ = LibXR::Topic::Domain("host");
+  /** @brief DevC HostData 云台目标 topic。 */
+  LibXR::Topic host_gimbal_target_topic_ =
+      LibXR::Topic::FindOrCreate<WebotsHostGimbalTarget>("target_euler",
+                                                         &host_domain_);
   /** @brief 云台反馈 topic 域。 */
   LibXR::Topic::Domain gimbal_domain_ = LibXR::Topic::Domain("gimbal");
   /** @brief 云台姿态反馈 topic。 */
