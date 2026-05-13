@@ -73,14 +73,14 @@ depends: []
  */
 struct WebotsHostGimbalTarget
 {
-  float rol{0.0f};       ///< roll 命令，单位 rad。
-  float pit{0.0f};       ///< pitch 命令，单位 rad。
+  float rol{0.0f};       ///< 机械俯仰轴 roll 命令，单位 rad。
+  float pit{0.0f};       ///< pitch 字段保留为 ABI 对齐。
   float yaw{0.0f};       ///< yaw 命令，单位 rad。
-  float rol_dot{0.0f};   ///< roll 速度前馈，单位 rad/s。
-  float pit_dot{0.0f};   ///< pitch 速度前馈，单位 rad/s。
+  float rol_dot{0.0f};   ///< 机械俯仰轴 roll 速度前馈，单位 rad/s。
+  float pit_dot{0.0f};   ///< pitch 速度字段保留为 ABI 对齐。
   float yaw_dot{0.0f};   ///< yaw 速度前馈，单位 rad/s。
-  float rol_ddot{0.0f};  ///< roll 加速度前馈，单位 rad/s^2。
-  float pit_ddot{0.0f};  ///< pitch 加速度前馈，单位 rad/s^2。
+  float rol_ddot{0.0f};  ///< 机械俯仰轴 roll 加速度前馈，单位 rad/s^2。
+  float pit_ddot{0.0f};  ///< pitch 加速度字段保留为 ABI 对齐。
   float yaw_ddot{0.0f};  ///< yaw 加速度前馈，单位 rad/s^2。
 };
 
@@ -166,7 +166,7 @@ class WebotsGimbal : public LibXR::Application
   static constexpr const char *MOTOR_NAMES[2] = {
       "target_motor_pitch",
       "target_motor_yaw"};  ///< Webots world 中的 pitch/yaw 电机名。
-  static constexpr float PITCH_TORQUE_SIGN = -1.0f;  ///< pitch 力矩方向标定。
+  static constexpr float PITCH_TORQUE_SIGN = 1.0f;   ///< pitch 力矩方向标定。
   static constexpr float YAW_TORQUE_SIGN = 1.0f;     ///< yaw 力矩方向标定。
   static constexpr float PITCH_GRAVITY_TORQUE =
       0.012f;  ///< pitch 固定重力补偿幅值，单位 Nm。
@@ -183,7 +183,7 @@ class WebotsGimbal : public LibXR::Application
   static constexpr float FRICTION_DEADBAND_RAD_S =
       0.02f;  ///< 摩擦方向判定死区，单位 rad/s。
   static constexpr float YAW_SENSOR_TO_COMMAND_OFFSET_RAD =
-      static_cast<float>(M_PI / 2.0);  ///< Webots 传感器 yaw 到命令 yaw 的偏移。
+      0.0f;  ///< 传感器坐标已按 x右/y前/z上 安装，yaw 前向为 0。
 
  public:
   /**
@@ -335,7 +335,7 @@ class WebotsGimbal : public LibXR::Application
     std::memcpy(gyro.data(), data.addr_, sizeof(gyro));
 
     std::lock_guard<std::mutex> lock(state_mutex_);
-    feedback_.pitch_rate = gyro[1];
+    feedback_.pitch_rate = gyro[0];
     feedback_.yaw_rate = gyro[2];
     feedback_.has_gyro = true;
   }
@@ -356,7 +356,7 @@ class WebotsGimbal : public LibXR::Application
     const auto euler = rotation.ToEulerAngleZYX();
 
     std::lock_guard<std::mutex> lock(state_mutex_);
-    feedback_.pitch = euler[1];
+    feedback_.pitch = euler[0];
     feedback_.yaw = LimitRad(euler[2] + YAW_SENSOR_TO_COMMAND_OFFSET_RAD);
     feedback_.has_rotation = true;
   }
@@ -376,7 +376,7 @@ class WebotsGimbal : public LibXR::Application
     std::memcpy(&target, data.addr_, sizeof(target));
 
     std::lock_guard<std::mutex> lock(state_mutex_);
-    if (std::abs(target.pit) < 1e-6f && std::abs(target.yaw) < 1e-6f)
+    if (std::abs(target.rol) < 1e-6f && std::abs(target.yaw) < 1e-6f)
     {
       ClearTargetCommandLocked();
       return;
@@ -391,18 +391,18 @@ class WebotsGimbal : public LibXR::Application
     if (!target_command_.valid)
     {
       XR_LOG_INFO(
-          "WebotsGimbal first host/target_euler pitch=%f yaw=%f pitch_vel=%f yaw_vel=%f",
-          static_cast<double>(target.pit), static_cast<double>(target.yaw),
-          static_cast<double>(target.pit_dot),
+          "WebotsGimbal first host/target_euler roll=%f yaw=%f roll_vel=%f yaw_vel=%f",
+          static_cast<double>(target.rol), static_cast<double>(target.yaw),
+          static_cast<double>(target.rol_dot),
           static_cast<double>(target.yaw_dot));
     }
 
     target_command_.valid = true;
-    target_command_.pitch = target.pit;
+    target_command_.pitch = target.rol;
     target_command_.yaw = target.yaw;
-    target_command_.pitch_vel = target.pit_dot;
+    target_command_.pitch_vel = target.rol_dot;
     target_command_.yaw_vel = target.yaw_dot;
-    target_command_.pitch_acc = target.pit_ddot;
+    target_command_.pitch_acc = target.rol_ddot;
     target_command_.yaw_acc = target.yaw_ddot;
   }
 
@@ -521,7 +521,7 @@ class WebotsGimbal : public LibXR::Application
     pid_pitch_omega_.SetFeedForward(pitch_feed_forward);
     pid_yaw_omega_.SetFeedForward(yaw_feed_forward);
 
-    // 当前 world 标定结果：pitch 电机正力矩会让发布坐标系的 pitch 变小。
+    // Webots world 的关节轴已按公开 B 系取向，力矩符号直接跟随控制输出。
     const float pitch_torque =
         Clamp(PITCH_TORQUE_SIGN *
                   pid_pitch_omega_.Calculate(target_pitch_omega, pitch_rate, dt),
