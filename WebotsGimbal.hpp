@@ -128,7 +128,7 @@ class WebotsGimbal : public LibXR::Application
   /**
    * @brief 最新云台反馈。
    *
-   * 姿态来自 `gimbal/rotation`，角速度来自 `camera_gyro`。如果角速度尚未到达，
+   * 姿态来自 `host/gimbal_quat`，角速度来自 `camera_gyro`。如果角速度尚未到达，
    * 控制线程会用 0 作为速度反馈。
    */
   struct FeedbackState
@@ -291,7 +291,7 @@ class WebotsGimbal : public LibXR::Application
           self->HandleRotationSample(data);
         },
         this);
-    gimbal_rotation_topic_.RegisterCallback(rotation_cb);
+    gimbal_quat_topic_.RegisterCallback(rotation_cb);
 
     auto target_cb = LibXR::Topic::Callback::Create(
         [](bool, WebotsGimbal *self, LibXR::RawData &data)
@@ -715,10 +715,8 @@ class WebotsGimbal : public LibXR::Application
   LibXR::Topic host_gimbal_target_topic_ =
       LibXR::Topic::FindOrCreate<WebotsHostGimbalTarget>("target_euler",
                                                          &host_domain_);
-  /** @brief 云台反馈 topic 域。 */
-  LibXR::Topic::Domain gimbal_domain_ = LibXR::Topic::Domain("gimbal");
   /** @brief 云台姿态反馈 topic。 */
-  LibXR::Topic gimbal_rotation_topic_ =
-      LibXR::Topic::FindOrCreate<LibXR::Quaternion<float>>("rotation",
-                                                           &gimbal_domain_);
+  LibXR::Topic gimbal_quat_topic_ =
+      LibXR::Topic::FindOrCreate<LibXR::Quaternion<float>>("gimbal_quat",
+                                                           &host_domain_);
 };
