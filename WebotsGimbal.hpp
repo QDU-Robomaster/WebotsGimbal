@@ -166,7 +166,7 @@ class WebotsGimbal : public LibXR::Application
   static constexpr const char *MOTOR_NAMES[2] = {
       "target_motor_pitch",
       "target_motor_yaw"};  ///< Webots world 中的 pitch/yaw 电机名。
-  static constexpr float PITCH_TORQUE_SIGN = 1.0f;   ///< pitch 力矩方向标定。
+  static constexpr float PITCH_TORQUE_SIGN = -1.0f;  ///< pitch 力矩方向标定。
   static constexpr float YAW_TORQUE_SIGN = 1.0f;     ///< yaw 力矩方向标定。
   static constexpr float PITCH_COULOMB_TORQUE =
       0.0008f;  ///< pitch 库伦摩擦补偿幅值，单位 Nm。
