@@ -53,7 +53,7 @@ depends: []
  * @brief Webots 云台力矩控制模块。
  *
  * 本模块模拟云台下位机：接收 host/target_euler、读取 Webots 相机姿态和角速度，
- * 在独立 1ms 控制线程中输出 pitch/yaw 两轴电机力矩。
+ * 在独立 1ms 控制线程中输出 roll/yaw 两轴电机力矩。
  */
 
 #include <webots/Motor.hpp>
@@ -69,18 +69,18 @@ depends: []
 
 #include "app_framework.hpp"
 /**
- * @brief DevC HostData 接收的云台目标载荷。
+ * @brief DevC HostData 接收的云台目标数据。
  */
 struct WebotsHostGimbalTarget
 {
   float rol{0.0f};       ///< 机械俯仰轴 roll 命令，单位 rad。
-  float pit{0.0f};       ///< pitch 字段保留为 ABI 对齐。
+  float pit{0.0f};       ///< pitch 字段保留用于匹配 DevC HostData 布局。
   float yaw{0.0f};       ///< yaw 命令，单位 rad。
   float rol_dot{0.0f};   ///< 机械俯仰轴 roll 速度前馈，单位 rad/s。
-  float pit_dot{0.0f};   ///< pitch 速度字段保留为 ABI 对齐。
+  float pit_dot{0.0f};   ///< pitch 速度字段保留用于匹配 DevC HostData 布局。
   float yaw_dot{0.0f};   ///< yaw 速度前馈，单位 rad/s。
   float rol_ddot{0.0f};  ///< 机械俯仰轴 roll 加速度前馈，单位 rad/s^2。
-  float pit_ddot{0.0f};  ///< pitch 加速度字段保留为 ABI 对齐。
+  float pit_ddot{0.0f};  ///< pitch 加速度字段保留用于匹配 DevC HostData 布局。
   float yaw_ddot{0.0f};  ///< yaw 加速度前馈，单位 rad/s^2。
 };
 
