@@ -278,7 +278,7 @@ class WebotsGimbal : public LibXR::Application
   void RegisterTopicCallbacks()
   {
     auto gyro_cb = LibXR::Topic::Callback::Create(
-        [](bool, WebotsGimbal *self, LibXR::RawData &data)
+        [](bool, WebotsGimbal *self, const LibXR::ConstRawData &data)
         {
           self->HandleGyroSample(data);
         },
@@ -286,7 +286,7 @@ class WebotsGimbal : public LibXR::Application
     gyro_topic_.RegisterCallback(gyro_cb);
 
     auto rotation_cb = LibXR::Topic::Callback::Create(
-        [](bool, WebotsGimbal *self, LibXR::RawData &data)
+        [](bool, WebotsGimbal *self, const LibXR::ConstRawData &data)
         {
           self->HandleRotationSample(data);
         },
@@ -294,7 +294,7 @@ class WebotsGimbal : public LibXR::Application
     gimbal_quat_topic_.RegisterCallback(rotation_cb);
 
     auto target_cb = LibXR::Topic::Callback::Create(
-        [](bool, WebotsGimbal *self, LibXR::RawData &data)
+        [](bool, WebotsGimbal *self, const LibXR::ConstRawData &data)
         {
           self->HandleHostGimbalTarget(data);
         },
@@ -320,7 +320,7 @@ class WebotsGimbal : public LibXR::Application
    * @brief 处理陀螺仪原始数据。
    * @param data topic 原始负载，期望为 3 个 float。
    */
-  void HandleGyroSample(LibXR::RawData &data)
+  void HandleGyroSample(const LibXR::ConstRawData &data)
   {
     GyroSample gyro{};
     if (data.addr_ == nullptr || data.size_ != sizeof(gyro))
@@ -340,7 +340,7 @@ class WebotsGimbal : public LibXR::Application
    * @brief 处理云台姿态反馈。
    * @param data topic 原始负载，期望为 `LibXR::Quaternion<float>`。
    */
-  void HandleRotationSample(LibXR::RawData &data)
+  void HandleRotationSample(const LibXR::ConstRawData &data)
   {
     if (data.addr_ == nullptr ||
         data.size_ != sizeof(LibXR::Quaternion<float>))
@@ -348,7 +348,7 @@ class WebotsGimbal : public LibXR::Application
       return;
     }
 
-    const auto rotation = *static_cast<LibXR::Quaternion<float> *>(data.addr_);
+    const auto rotation = *static_cast<const LibXR::Quaternion<float> *>(data.addr_);
     const auto euler = rotation.ToEulerAngleZYX();
 
     std::lock_guard<std::mutex> lock(state_mutex_);
@@ -361,7 +361,7 @@ class WebotsGimbal : public LibXR::Application
    * @brief 处理 host/target_euler 云台目标。
    * @param data topic 原始负载，期望为 `WebotsHostGimbalTarget`。
    */
-  void HandleHostGimbalTarget(LibXR::RawData &data)
+  void HandleHostGimbalTarget(const LibXR::ConstRawData &data)
   {
     if (data.addr_ == nullptr || data.size_ != sizeof(WebotsHostGimbalTarget))
     {
