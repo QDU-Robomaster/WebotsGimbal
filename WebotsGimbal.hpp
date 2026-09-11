@@ -66,6 +66,7 @@ depends: []
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <stdexcept>
 
 #include "app_framework.hpp"
 /**
@@ -275,6 +276,17 @@ class WebotsGimbal : public LibXR::Application
   /**
    * @brief 注册所有输入 topic 回调。
    */
+  static LibXR::Topic FindRequiredTopic(const char *name, LibXR::Topic::Domain *domain)
+  {
+    auto handle = LibXR::Topic::Find(name, domain);
+    if (handle == nullptr)
+    {
+      XR_LOG_ERROR("WebotsGimbal required topic not found: %s", name);
+      throw std::runtime_error("WebotsGimbal required topic not found");
+    }
+    return LibXR::Topic(handle);
+  }
+
   void RegisterTopicCallbacks()
   {
     auto gyro_cb = LibXR::Topic::Callback::Create(
@@ -708,13 +720,12 @@ class WebotsGimbal : public LibXR::Application
       LibXR::Topic::Domain("libxr_def_domain");
   /** @brief 相机陀螺仪 topic。 */
   LibXR::Topic gyro_topic_ =
-      LibXR::Topic::FindOrCreate<GyroSample>("camera_gyro", &raw_topic_domain_);
+      FindRequiredTopic("camera_gyro", &raw_topic_domain_);
   /** @brief DevC host topic 域。 */
   LibXR::Topic::Domain host_domain_ = LibXR::Topic::Domain("host");
   /** @brief DevC HostData 云台目标 topic。 */
   LibXR::Topic host_gimbal_target_topic_ =
-      LibXR::Topic::FindOrCreate<WebotsHostGimbalTarget>("target_euler",
-                                                         &host_domain_);
+      FindRequiredTopic("target_euler", &host_domain_);
   /** @brief 云台姿态反馈 topic。 */
   LibXR::Topic gimbal_quat_topic_ =
       LibXR::Topic::FindOrCreate<LibXR::Quaternion<float>>("gimbal_quat",
