@@ -1,5 +1,16 @@
 # WebotsGimbal
 
+## Static assembly source line
+
+This source line uses explicit C++ constructor dependencies and ordered instance
+arguments. Inspect the current primary header with `xrobot_mod_parser --path .`;
+its declarations, not old manifest/config examples, define the interface.
+Historical HardwareContainer/ApplicationManager examples below apply only to the
+older dynamic source tags. Device/protocol descriptions remain relevant.
+See the XRobot [migration guide](https://github.com/xrobot-org/XRobot/blob/dev/MIGRATION.md).
+Compilation is not hardware validation; retain version-specific board evidence.
+
+
 `WebotsGimbal` 是 Webots 里的云台下位机模拟器。
 
 它不负责算打哪里，也不负责规划轨迹。它只做一件事：拿到 Aimer 给出的云台目标，再根据 Webots 里的姿态和角速度反馈，按 1ms 周期给 roll/yaw 两个电机输出力矩。
