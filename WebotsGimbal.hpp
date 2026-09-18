@@ -176,38 +176,36 @@ class WebotsGimbal
     return LibXR::PID<float>::Param{1.0f, 0.02f, 0.08f, 0.0f, 0.08f, 0.04f, false};
   }
 
+  struct Param
+  {
+    LibXR::PID<float>::Param pid_pitch_angle;  ///< pitch 角度环 PID 参数，输出目标 pitch 角速度。
+    LibXR::PID<float>::Param pid_pitch_omega;  ///< pitch 角速度环 PID 参数，输出 pitch 电机力矩。
+    LibXR::PID<float>::Param pid_yaw_angle;  ///< yaw 角度环 PID 参数，输出目标 yaw 角速度。
+    LibXR::PID<float>::Param pid_yaw_omega;  ///< yaw 角速度环 PID 参数，输出 yaw 电机力矩。
+    float pitch_inertia;  ///< pitch 轴惯量前馈系数。
+    float yaw_inertia;  ///< yaw 轴惯量前馈系数。
+    float pitch_torque_limit;  ///< pitch 最终力矩限幅，单位 Nm。
+    float yaw_torque_limit;  ///< yaw 最终力矩限幅，单位 Nm。
+    uint32_t control_period_ms;  ///< 内部控制线程周期，单位 ms，最小值为 1。
+    uint32_t log_interval;  ///< 控制日志间隔；为 0 时关闭周期日志。
+  };
+
   /**
    * @brief 构造 Webots 云台控制器并启动内部控制线程。
-   * @param pid_pitch_angle pitch 角度环 PID 参数，输出目标 pitch 角速度。
-   * @param pid_pitch_omega pitch 角速度环 PID 参数，输出 pitch 电机力矩。
-   * @param pid_yaw_angle yaw 角度环 PID 参数，输出目标 yaw 角速度。
-   * @param pid_yaw_omega yaw 角速度环 PID 参数，输出 yaw 电机力矩。
-   * @param pitch_inertia pitch 轴惯量前馈系数。
-   * @param yaw_inertia yaw 轴惯量前馈系数。
-   * @param pitch_torque_limit pitch 最终力矩限幅，单位 Nm。
-   * @param yaw_torque_limit yaw 最终力矩限幅，单位 Nm。
-   * @param control_period_ms 内部控制线程周期，单位 ms，最小值为 1。
-   * @param log_interval 控制日志间隔；为 0 时关闭周期日志。
+   * @param param Value configuration.
    */
   WebotsGimbal(
-
-      LibXR::PID<float>::Param pid_pitch_angle = DefaultPitchAnglePid(),
-      LibXR::PID<float>::Param pid_pitch_omega = DefaultPitchOmegaPid(),
-      LibXR::PID<float>::Param pid_yaw_angle = DefaultYawAnglePid(),
-      LibXR::PID<float>::Param pid_yaw_omega = DefaultYawOmegaPid(),
-      float pitch_inertia = 0.00012f, float yaw_inertia = 0.0002f,
-      float pitch_torque_limit = 0.035f, float yaw_torque_limit = 0.04f,
-      uint32_t control_period_ms = 1, uint32_t log_interval = 1000)
-      : pid_pitch_angle_(pid_pitch_angle),
-        pid_pitch_omega_(pid_pitch_omega),
-        pid_yaw_angle_(pid_yaw_angle),
-        pid_yaw_omega_(pid_yaw_omega),
-        pitch_inertia_(pitch_inertia),
-        yaw_inertia_(yaw_inertia),
-        pitch_torque_limit_(pitch_torque_limit),
-        yaw_torque_limit_(yaw_torque_limit),
-        control_period_ms_(std::max<uint32_t>(1U, control_period_ms)),
-        log_interval_(log_interval)
+      const Param& param = {.pid_pitch_angle = DefaultPitchAnglePid(), .pid_pitch_omega = DefaultPitchOmegaPid(), .pid_yaw_angle = DefaultYawAnglePid(), .pid_yaw_omega = DefaultYawOmegaPid(), .pitch_inertia = 0.00012f, .yaw_inertia = 0.0002f, .pitch_torque_limit = 0.035f, .yaw_torque_limit = 0.04f, .control_period_ms = 1, .log_interval = 1000})
+      : pid_pitch_angle_(param.pid_pitch_angle),
+        pid_pitch_omega_(param.pid_pitch_omega),
+        pid_yaw_angle_(param.pid_yaw_angle),
+        pid_yaw_omega_(param.pid_yaw_omega),
+        pitch_inertia_(param.pitch_inertia),
+        yaw_inertia_(param.yaw_inertia),
+        pitch_torque_limit_(param.pitch_torque_limit),
+        yaw_torque_limit_(param.yaw_torque_limit),
+        control_period_ms_(std::max<uint32_t>(1U, param.control_period_ms)),
+        log_interval_(param.log_interval)
   {
     RegisterTopicCallbacks();
     control_thread_.Create(this, ControlThread, "WebotsGimbalCtl", 8192,
