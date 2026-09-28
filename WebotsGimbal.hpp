@@ -212,13 +212,6 @@ class WebotsGimbal
                            LibXR::Thread::Priority::REALTIME);
   }
 
-  /**
-   * @brief 外部监控入口。
-   *
-   * 控制周期由内部线程负责，因此这里保持为空。
-   */
-  void OnMonitor() {}
-
  private:
   /**
    * @brief 注册所有输入 topic 回调。
