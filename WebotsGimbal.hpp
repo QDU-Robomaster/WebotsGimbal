@@ -155,7 +155,13 @@ class WebotsGimbal
    */
   static constexpr LibXR::PID<float>::Param DefaultPitchAnglePid()
   {
-    return LibXR::PID<float>::Param{1.0f, 16.0f, 0.0f, 0.0f, 0.0f, 10.0f, false};
+    return LibXR::PID<float>::Param{.k = 1.0f,
+                                    .p = 16.0f,
+                                    .i = 0.0f,
+                                    .d = 0.0f,
+                                    .i_limit = 0.0f,
+                                    .out_limit = 10.0f,
+                                    .cycle = false};
   }
 
   /**
@@ -167,7 +173,13 @@ class WebotsGimbal
    */
   static constexpr LibXR::PID<float>::Param DefaultPitchOmegaPid()
   {
-    return LibXR::PID<float>::Param{1.0f, 0.012f, 0.04f, 0.0f, 0.08f, 0.035f, false};
+    return LibXR::PID<float>::Param{.k = 1.0f,
+                                    .p = 0.012f,
+                                    .i = 0.04f,
+                                    .d = 0.0f,
+                                    .i_limit = 0.08f,
+                                    .out_limit = 0.035f,
+                                    .cycle = false};
   }
 
   /**
@@ -179,7 +191,13 @@ class WebotsGimbal
    */
   static constexpr LibXR::PID<float>::Param DefaultYawAnglePid()
   {
-    return LibXR::PID<float>::Param{1.0f, 8.0f, 0.0f, 0.0f, 0.0f, 10.0f, true};
+    return LibXR::PID<float>::Param{.k = 1.0f,
+                                    .p = 8.0f,
+                                    .i = 0.0f,
+                                    .d = 0.0f,
+                                    .i_limit = 0.0f,
+                                    .out_limit = 10.0f,
+                                    .cycle = true};
   }
 
   /**
@@ -191,7 +209,13 @@ class WebotsGimbal
    */
   static constexpr LibXR::PID<float>::Param DefaultYawOmegaPid()
   {
-    return LibXR::PID<float>::Param{1.0f, 0.02f, 0.08f, 0.0f, 0.08f, 0.04f, false};
+    return LibXR::PID<float>::Param{.k = 1.0f,
+                                    .p = 0.02f,
+                                    .i = 0.08f,
+                                    .d = 0.0f,
+                                    .i_limit = 0.08f,
+                                    .out_limit = 0.04f,
+                                    .cycle = false};
   }
 
   /**
@@ -235,8 +259,16 @@ class WebotsGimbal
    *       A missing `camera_gyro` or `host/target_euler` is logged and throws
    *       `std::runtime_error`.
    */
-  WebotsGimbal(
-      const Param& param = {.pid_pitch_angle = DefaultPitchAnglePid(), .pid_pitch_omega = DefaultPitchOmegaPid(), .pid_yaw_angle = DefaultYawAnglePid(), .pid_yaw_omega = DefaultYawOmegaPid(), .pitch_inertia = 0.00012f, .yaw_inertia = 0.0002f, .pitch_torque_limit = 0.035f, .yaw_torque_limit = 0.04f, .control_period_ms = 1, .log_interval = 1000})
+  WebotsGimbal(const Param& param = {.pid_pitch_angle = DefaultPitchAnglePid(),
+                                     .pid_pitch_omega = DefaultPitchOmegaPid(),
+                                     .pid_yaw_angle = DefaultYawAnglePid(),
+                                     .pid_yaw_omega = DefaultYawOmegaPid(),
+                                     .pitch_inertia = 0.00012f,
+                                     .yaw_inertia = 0.0002f,
+                                     .pitch_torque_limit = 0.035f,
+                                     .yaw_torque_limit = 0.04f,
+                                     .control_period_ms = 1,
+                                     .log_interval = 1000})
       : pid_pitch_angle_(param.pid_pitch_angle),
         pid_pitch_omega_(param.pid_pitch_omega),
         pid_yaw_angle_(param.pid_yaw_angle),
