@@ -21,19 +21,29 @@ depends: []
 #include "thread.hpp"
 
 /**
- * @brief DevC HostData 接收的云台目标数据。
+ * @brief DevC HostData 接收的云台目标数据，9 个 `float`。
+ *        Gimbal target data received by DevC HostData, 9 `float`.
  */
 struct WebotsHostGimbalTarget
 {
-  float rol{0.0f};       ///< 机械俯仰轴 roll 命令，单位 rad。
-  float pit{0.0f};       ///< pitch 字段保留用于匹配 DevC HostData 布局。
-  float yaw{0.0f};       ///< yaw 命令，单位 rad。
-  float rol_dot{0.0f};   ///< 机械俯仰轴 roll 速度前馈，单位 rad/s。
-  float pit_dot{0.0f};   ///< pitch 速度字段保留用于匹配 DevC HostData 布局。
-  float yaw_dot{0.0f};   ///< yaw 速度前馈，单位 rad/s。
-  float rol_ddot{0.0f};  ///< 机械俯仰轴 roll 加速度前馈，单位 rad/s^2。
-  float pit_ddot{0.0f};  ///< pitch 加速度字段保留用于匹配 DevC HostData 布局。
-  float yaw_ddot{0.0f};  ///< yaw 加速度前馈，单位 rad/s^2。
+  float rol{0.0f};  ///< 机械俯仰轴 roll 命令，单位 rad
+  ///< Roll command of the mechanical pitch axis in rad
+  float pit{0.0f};  ///< pitch 字段，与 DevC HostData 布局对齐
+  ///< pitch field, aligned with the DevC HostData layout
+  float yaw{0.0f};  ///< yaw 命令，单位 rad
+  ///< Yaw command in rad
+  float rol_dot{0.0f};  ///< 机械俯仰轴 roll 速度前馈，单位 rad/s
+  ///< Roll velocity feedforward of the mechanical pitch axis in rad/s
+  float pit_dot{0.0f};  ///< pitch 速度字段，与 DevC HostData 布局对齐
+  ///< pitch velocity field, aligned with the DevC HostData layout
+  float yaw_dot{0.0f};  ///< yaw 速度前馈，单位 rad/s
+  ///< Yaw velocity feedforward in rad/s
+  float rol_ddot{0.0f};  ///< 机械俯仰轴 roll 加速度前馈，单位 rad/s^2
+  ///< Roll acceleration feedforward of the mechanical pitch axis in rad/s^2
+  float pit_ddot{0.0f};  ///< pitch 加速度字段，与 DevC HostData 布局对齐
+  ///< pitch acceleration field, aligned with the DevC HostData layout
+  float yaw_ddot{0.0f};  ///< yaw 加速度前馈，单位 rad/s^2
+  ///< Yaw acceleration feedforward in rad/s^2
 };
 
 static_assert(sizeof(WebotsHostGimbalTarget) == sizeof(float) * 9);
@@ -51,8 +61,12 @@ extern webots::Robot* _libxr_webots_robot_handle;
 
 /**
  * @brief Webots 云台力矩控制器。
+ *        Webots gimbal torque controller.
  *
- * topic 回调只缓存最新命令和反馈；固定周期控制线程独占 PID 状态和 Webots 电机输出。
+ * @details Topic 回调只缓存最新命令和反馈；固定周期控制线程独占 PID 状态和 Webots
+ *          电机输出。
+ *          The Topic callbacks only cache the latest command and feedback; the
+ *          fixed-period control thread owns the PID state and the Webots motor output.
  */
 class WebotsGimbal
 {
@@ -133,8 +147,11 @@ class WebotsGimbal
 
  public:
   /**
-   * @brief 返回默认 pitch 角度环 PID 参数。
+   * @brief 获取默认 pitch 角度环 PID 参数。
+   *        Get the default pitch angle-loop PID parameters.
+   *
    * @return 默认 pitch 角度环参数。
+   *         The default pitch angle-loop parameters.
    */
   static constexpr LibXR::PID<float>::Param DefaultPitchAnglePid()
   {
@@ -142,8 +159,11 @@ class WebotsGimbal
   }
 
   /**
-   * @brief 返回默认 pitch 角速度环 PID 参数。
+   * @brief 获取默认 pitch 角速度环 PID 参数。
+   *        Get the default pitch angular-velocity-loop PID parameters.
+   *
    * @return 默认 pitch 角速度环参数。
+   *         The default pitch angular-velocity-loop parameters.
    */
   static constexpr LibXR::PID<float>::Param DefaultPitchOmegaPid()
   {
@@ -151,8 +171,11 @@ class WebotsGimbal
   }
 
   /**
-   * @brief 返回默认 yaw 角度环 PID 参数。
+   * @brief 获取默认 yaw 角度环 PID 参数。
+   *        Get the default yaw angle-loop PID parameters.
+   *
    * @return 默认 yaw 角度环参数。
+   *         The default yaw angle-loop parameters.
    */
   static constexpr LibXR::PID<float>::Param DefaultYawAnglePid()
   {
@@ -160,31 +183,57 @@ class WebotsGimbal
   }
 
   /**
-   * @brief 返回默认 yaw 角速度环 PID 参数。
+   * @brief 获取默认 yaw 角速度环 PID 参数。
+   *        Get the default yaw angular-velocity-loop PID parameters.
+   *
    * @return 默认 yaw 角速度环参数。
+   *         The default yaw angular-velocity-loop parameters.
    */
   static constexpr LibXR::PID<float>::Param DefaultYawOmegaPid()
   {
     return LibXR::PID<float>::Param{1.0f, 0.02f, 0.08f, 0.0f, 0.08f, 0.04f, false};
   }
 
+  /**
+   * @brief 构造参数。
+   *        Construction parameters.
+   */
   struct Param
   {
-    LibXR::PID<float>::Param pid_pitch_angle;  ///< pitch 角度环 PID 参数，输出目标 pitch 角速度。
-    LibXR::PID<float>::Param pid_pitch_omega;  ///< pitch 角速度环 PID 参数，输出 pitch 电机力矩。
-    LibXR::PID<float>::Param pid_yaw_angle;  ///< yaw 角度环 PID 参数，输出目标 yaw 角速度。
-    LibXR::PID<float>::Param pid_yaw_omega;  ///< yaw 角速度环 PID 参数，输出 yaw 电机力矩。
-    float pitch_inertia;  ///< pitch 轴惯量前馈系数。
-    float yaw_inertia;  ///< yaw 轴惯量前馈系数。
-    float pitch_torque_limit;  ///< pitch 最终力矩限幅，单位 Nm。
-    float yaw_torque_limit;  ///< yaw 最终力矩限幅，单位 Nm。
-    uint32_t control_period_ms;  ///< 内部控制线程周期，单位 ms，最小值为 1。
-    uint32_t log_interval;  ///< 控制日志间隔；为 0 时关闭周期日志。
+    LibXR::PID<float>::Param pid_pitch_angle;  ///< pitch 角度环 PID，输出目标角速度
+    ///< Pitch angle-loop PID, outputs the target angular velocity
+    LibXR::PID<float>::Param pid_pitch_omega;  ///< pitch 角速度环 PID，输出电机力矩
+    ///< Pitch angular-velocity-loop PID, outputs the motor torque
+    LibXR::PID<float>::Param pid_yaw_angle;  ///< yaw 角度环 PID，输出目标角速度
+    ///< Yaw angle-loop PID, outputs the target angular velocity
+    LibXR::PID<float>::Param pid_yaw_omega;  ///< yaw 角速度环 PID，输出电机力矩
+    ///< Yaw angular-velocity-loop PID, outputs the motor torque
+    float pitch_inertia;  ///< pitch 轴惯量前馈系数
+    ///< Inertia feedforward coefficient of the pitch axis
+    float yaw_inertia;  ///< yaw 轴惯量前馈系数
+    ///< Inertia feedforward coefficient of the yaw axis
+    float pitch_torque_limit;  ///< pitch 最终力矩限幅，单位 N·m
+    ///< Final pitch torque limit in N·m
+    float yaw_torque_limit;  ///< yaw 最终力矩限幅，单位 N·m
+    ///< Final yaw torque limit in N·m
+    uint32_t control_period_ms;  ///< 控制线程周期，单位 ms，最小按 1 执行
+    ///< Control thread period in ms, at least 1 is used
+    uint32_t log_interval;  ///< 控制日志间隔，为 0 时关闭周期日志
+    ///< Control log interval; 0 disables the periodic log
   };
 
   /**
-   * @brief 构造 Webots 云台控制器并启动内部控制线程。
-   * @param param Value configuration.
+   * @brief 构造 Webots 云台控制器，注册输入 Topic 回调并启动控制线程。
+   *        Construct the Webots gimbal controller, register the input Topic callbacks and
+   *        start the control thread.
+   *
+   * @param param 构造参数。
+   *              Construction parameters.
+   *
+   * @note `camera_gyro` 或 `host/target_euler` 缺失时记录错误并抛出
+   *       `std::runtime_error`。
+   *       A missing `camera_gyro` or `host/target_euler` is logged and throws
+   *       `std::runtime_error`.
    */
   WebotsGimbal(
       const Param& param = {.pid_pitch_angle = DefaultPitchAnglePid(), .pid_pitch_omega = DefaultPitchOmegaPid(), .pid_yaw_angle = DefaultYawAnglePid(), .pid_yaw_omega = DefaultYawOmegaPid(), .pitch_inertia = 0.00012f, .yaw_inertia = 0.0002f, .pitch_torque_limit = 0.035f, .yaw_torque_limit = 0.04f, .control_period_ms = 1, .log_interval = 1000})
@@ -206,7 +255,15 @@ class WebotsGimbal
 
  private:
   /**
-   * @brief 注册所有输入 topic 回调。
+   * @brief 查找必需的 Topic，缺失时抛出异常。
+   *        Find a required Topic and throw when it is missing.
+   *
+   * @param name Topic 名称。
+   *             Topic name.
+   * @param domain Topic 所在的 domain。
+   *               Domain of the Topic.
+   * @return 找到的 Topic。
+   *         The Topic found.
    */
   static LibXR::Topic FindRequiredTopic(const char* name, LibXR::Topic::Domain* domain)
   {
@@ -219,6 +276,10 @@ class WebotsGimbal
     return LibXR::Topic(handle);
   }
 
+  /**
+   * @brief 注册所有输入 Topic 的回调。
+   *        Register the callbacks of all input Topics.
+   */
   void RegisterTopicCallbacks()
   {
     auto gyro_cb = LibXR::Topic::Callback::Create(
@@ -351,7 +412,8 @@ class WebotsGimbal
   }
 
   /**
-   * @brief 执行一次 1ms 控制周期。
+   * @brief 执行一次控制周期。
+   *        Run one control period.
    */
   void ControlStep()
   {
