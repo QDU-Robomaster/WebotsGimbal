@@ -136,7 +136,7 @@ An instance written by `xrobot instance add QDU-Robomaster/WebotsGimbal`, which 
 ```yaml
 modules:
   - module: QDU-Robomaster/WebotsGimbal
-    id: webotsgimbal_0
+    id: WebotsGimbal_0
     args:
       - param:
           pid_pitch_angle: WebotsGimbal::DefaultPitchAnglePid()
