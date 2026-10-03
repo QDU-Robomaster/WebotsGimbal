@@ -2,18 +2,10 @@
 
 // clang-format off
 /* === MODULE MANIFEST V2 ===
-module_description: Webots torque-mode gimbal controller
+module_description: Webots 云台力矩控制模块：按目标角与反馈为 pitch、yaw 两个电机输出力矩 / Webots gimbal torque controller Module that outputs the torques of the pitch and yaw motors from the target angles and the feedback
 depends: []
 === END MANIFEST === */
 // clang-format on
-
-/**
- * @file WebotsGimbal.hpp
- * @brief Webots 云台力矩控制模块。
- *
- * 本模块模拟云台下位机：接收 host/target_euler、读取 Webots 相机姿态和角速度，
- * 在独立 1ms 控制线程中输出 roll/yaw 两轴电机力矩。
- */
 
 #include <algorithm>
 #include <array>
@@ -413,7 +405,7 @@ class WebotsGimbal
     for (size_t i = 0; i < static_cast<size_t>(MotorType::NUMBER); i++)
     {
       motors_[i] = _libxr_webots_robot_handle->getMotor(MOTOR_NAMES[i]);
-      // 当前 world 的关节零位和相机初始视角不一致，所以不能用绝对位置伺服。
+      // world 的关节零位与相机初始视角不同，电机使用力矩模式。
       motors_[i]->setPosition(std::numeric_limits<double>::infinity());
       motors_[i]->setTorque(0.0);
     }
@@ -445,7 +437,7 @@ class WebotsGimbal
     const float target_yaw_omega =
         pid_yaw_angle_.Calculate(yaw_error, 0.0f, dt) + target_yaw_vel;
 
-    // PID 微分项是反馈项；不要对角度环生成的目标速度再差分后当成前馈加速度。
+    // 前馈加速度取自 host/target_euler，PID 微分项属于反馈。
     const float pitch_feed_forward =
         pitch_inertia_ * target_pitch_acc +
         FrictionCompensation(target_pitch_omega, pitch_rate, PITCH_COULOMB_TORQUE,
