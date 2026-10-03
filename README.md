@@ -93,10 +93,10 @@ WebotsGimbal(const Param& param = {.pid_pitch_angle = DefaultPitchAnglePid(),
 
 依赖：无。
 
-配置参数（`Param`）：
+配置参数（`Param`；PID 为 `LibXR::PID<float>::Param`，字段为 `k, p, i, d, i_limit, out_limit, cycle`）：
 
-- `pid_pitch_angle` / `pid_yaw_angle`：角度环 `LibXR::PID<float>::Param`，输出目标角速度。默认 `DefaultPitchAnglePid()`（`p = 16`，`out_limit = 10`）与 `DefaultYawAnglePid()`（`p = 8`，`out_limit = 10`，`cycle = true`）。
-- `pid_pitch_omega` / `pid_yaw_omega`：角速度环，输出电机力矩。默认 `DefaultPitchOmegaPid()`（`p = 0.012`，`i = 0.04`，`i_limit = 0.08`，`out_limit = 0.035`）与 `DefaultYawOmegaPid()`（`p = 0.02`，`i = 0.08`，`i_limit = 0.08`，`out_limit = 0.04`）。
+- `pid_pitch_angle` / `pid_yaw_angle`：角度环，输出目标角速度。默认 `DefaultPitchAnglePid()`（`k = 1`，`p = 16`，`out_limit = 10`，`cycle = false`）与 `DefaultYawAnglePid()`（`k = 1`，`p = 8`，`out_limit = 10`，`cycle = true`），其余字段为 0。
+- `pid_pitch_omega` / `pid_yaw_omega`：角速度环，输出电机力矩。默认 `DefaultPitchOmegaPid()`（`k = 1`，`p = 0.012`，`i = 0.04`，`i_limit = 0.08`，`out_limit = 0.035`，`cycle = false`）与 `DefaultYawOmegaPid()`（`k = 1`，`p = 0.02`，`i = 0.08`，`i_limit = 0.08`，`out_limit = 0.04`，`cycle = false`），其余字段为 0。
 - `pitch_inertia` / `yaw_inertia`：惯量前馈系数，默认 `0.00012` / `0.0002`。
 - `pitch_torque_limit` / `yaw_torque_limit`：最终电机力矩限幅，单位 N·m，默认 `0.035` / `0.04`。
 - `control_period_ms`：内部控制线程周期，单位 ms，默认 `1`，最小按 1 执行。
@@ -104,10 +104,10 @@ WebotsGimbal(const Param& param = {.pid_pitch_angle = DefaultPitchAnglePid(),
 
 Dependencies: none.
 
-Configuration parameters (`Param`):
+Configuration parameters (`Param`; the PIDs are `LibXR::PID<float>::Param` with fields `k, p, i, d, i_limit, out_limit, cycle`):
 
-- `pid_pitch_angle` / `pid_yaw_angle`: angle loop `LibXR::PID<float>::Param`, output is the target angular velocity. Defaults `DefaultPitchAnglePid()` (`p = 16`, `out_limit = 10`) and `DefaultYawAnglePid()` (`p = 8`, `out_limit = 10`, `cycle = true`).
-- `pid_pitch_omega` / `pid_yaw_omega`: angular velocity loop, output is the motor torque. Defaults `DefaultPitchOmegaPid()` (`p = 0.012`, `i = 0.04`, `i_limit = 0.08`, `out_limit = 0.035`) and `DefaultYawOmegaPid()` (`p = 0.02`, `i = 0.08`, `i_limit = 0.08`, `out_limit = 0.04`).
+- `pid_pitch_angle` / `pid_yaw_angle`: angle loop, output is the target angular velocity. Defaults `DefaultPitchAnglePid()` (`k = 1`, `p = 16`, `out_limit = 10`, `cycle = false`) and `DefaultYawAnglePid()` (`k = 1`, `p = 8`, `out_limit = 10`, `cycle = true`), the remaining fields are 0.
+- `pid_pitch_omega` / `pid_yaw_omega`: angular velocity loop, output is the motor torque. Defaults `DefaultPitchOmegaPid()` (`k = 1`, `p = 0.012`, `i = 0.04`, `i_limit = 0.08`, `out_limit = 0.035`, `cycle = false`) and `DefaultYawOmegaPid()` (`k = 1`, `p = 0.02`, `i = 0.08`, `i_limit = 0.08`, `out_limit = 0.04`, `cycle = false`), the remaining fields are 0.
 - `pitch_inertia` / `yaw_inertia`: inertia feedforward coefficients, default `0.00012` / `0.0002`.
 - `pitch_torque_limit` / `yaw_torque_limit`: final motor torque limits in N·m, default `0.035` / `0.04`.
 - `control_period_ms`: period of the internal control thread in ms, default `1`, at least 1 is used.
