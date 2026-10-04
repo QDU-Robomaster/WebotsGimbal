@@ -23,7 +23,7 @@ The two motors work in torque mode: when control is first taken over, `setPositi
 
 `camera_gyro` 与 `host/target_euler` 在构造前已存在，缺失时记录错误并抛出 `std::runtime_error`；`host/gimbal_quat` 缺失时由本模块创建。
 
-控制线程 `WebotsGimbalCtl`（REALTIME 优先级，栈 8192）每 `control_period_ms` 运行一次，默认 1 ms，即 1000 Hz。Topic 回调缓存最新值；控制线程每周期取一次快照，在锁外完成 PID、前馈、限幅与 `setTorque()`，使 Topic 抖动与控制计算、Webots API 调用分处不同的锁。没有有效目标或尚未收到姿态反馈时，两轴力矩置零。
+控制线程 `WebotsGimbalCtl`（REALTIME 优先级，栈 8192）每 `control_period_ms` 运行一次，默认 1 ms，即 1000 Hz。Topic 回调在锁内缓存最新值；控制线程每周期在锁内取一次快照，PID、前馈、限幅与 `setTorque()` 在锁外完成，持锁时间只覆盖缓存更新与取快照。没有有效目标或尚未收到姿态反馈时，两轴力矩置零。
 
 单轴控制链路：
 
@@ -44,7 +44,7 @@ Feedback inputs:
 
 `camera_gyro` and `host/target_euler` exist before construction, and a missing one is logged and throws `std::runtime_error`; `host/gimbal_quat` is created by this Module when missing.
 
-The control thread `WebotsGimbalCtl` (REALTIME priority, stack 8192) runs every `control_period_ms`, 1 ms by default, i.e. 1000 Hz. The Topic callbacks cache the latest values; every period the control thread takes one snapshot and performs the PID, the feedforward, the limiting and `setTorque()` outside the lock, so Topic jitter and the control computation and Webots API calls sit behind different locks. Without a valid target or before the attitude feedback arrives, both axis torques are set to zero.
+The control thread `WebotsGimbalCtl` (REALTIME priority, stack 8192) runs every `control_period_ms`, 1 ms by default, i.e. 1000 Hz. The Topic callbacks cache the latest values under the lock; every period the control thread takes one snapshot under the lock and performs the PID, the feedforward, the limiting and `setTorque()` outside it, so the lock is held only while the cache is updated or the snapshot is taken. Without a valid target or before the attitude feedback arrives, both axis torques are set to zero.
 
 The single-axis control chain:
 
