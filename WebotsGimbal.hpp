@@ -14,6 +14,8 @@ depends: []
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <string>
+#include <string_view>
 #include <stdexcept>
 #include <webots/Motor.hpp>
 #include <webots/Robot.hpp>
@@ -71,7 +73,7 @@ extern webots::Robot* _libxr_webots_robot_handle;
 class WebotsGimbal
 {
   /**
-   * @brief `camera_gyro` topic 的原始三轴角速度样本。
+   * @brief 角速度 Topic 的三轴角速度样本（本体系）。
    */
   using GyroSample = std::array<float, 3>;
 
@@ -94,7 +96,7 @@ class WebotsGimbal
   /**
    * @brief 最新云台反馈。
    *
-   * 姿态来自 `host/gimbal_quat`，角速度来自 `camera_gyro`。如果角速度尚未到达，
+   * 姿态与角速度来自配置的 IMU Topic（仿真里由 WebotsCamera 作为 MCU 发布）。如果角速度尚未到达，
    * 控制线程会用 0 作为速度反馈。
    */
   struct FeedbackState
@@ -244,6 +246,10 @@ class WebotsGimbal
     ///< Control thread period in ms, at least 1 is used
     uint32_t log_interval;  ///< 控制日志间隔，为 0 时关闭周期日志
     ///< Control log interval; 0 disables the periodic log
+    std::string_view gyro_topic;  ///< 本体系角速度 Topic（默认 domain）
+    ///< Body angular-rate Topic (default domain)
+    std::string_view quat_topic;  ///< 本体系到世界系姿态 Topic（默认 domain）
+    ///< Body-to-world attitude Topic (default domain)
   };
 
   /**
@@ -254,9 +260,8 @@ class WebotsGimbal
    * @param param 构造参数。
    *              Construction parameters.
    *
-   * @note `camera_gyro` 或 `host/target_euler` 缺失时记录错误并抛出
-   *       `std::runtime_error`。
-   *       A missing `camera_gyro` or `host/target_euler` is logged and throws
+   * @note IMU Topic 或 `host/target_euler` 缺失时记录错误并抛出 `std::runtime_error`。
+   *       A missing IMU Topic or `host/target_euler` is logged and throws
    *       `std::runtime_error`.
    */
   WebotsGimbal(const Param& param = {.pid_pitch_angle = DefaultPitchAnglePid(),
@@ -268,7 +273,9 @@ class WebotsGimbal
                                      .pitch_torque_limit = 0.035f,
                                      .yaw_torque_limit = 0.04f,
                                      .control_period_ms = 1,
-                                     .log_interval = 1000})
+                                     .log_interval = 1000,
+                                     .gyro_topic = "gimbal_gyro",
+                                     .quat_topic = "gimbal_quat"})
       : pid_pitch_angle_(param.pid_pitch_angle),
         pid_pitch_omega_(param.pid_pitch_omega),
         pid_yaw_angle_(param.pid_yaw_angle),
@@ -278,7 +285,9 @@ class WebotsGimbal
         pitch_torque_limit_(param.pitch_torque_limit),
         yaw_torque_limit_(param.yaw_torque_limit),
         control_period_ms_(std::max<uint32_t>(1U, param.control_period_ms)),
-        log_interval_(param.log_interval)
+        log_interval_(param.log_interval),
+        gyro_topic_(FindRequiredTopic(std::string(param.gyro_topic).c_str(), nullptr)),
+        gimbal_quat_topic_(FindRequiredTopic(std::string(param.quat_topic).c_str(), nullptr))
   {
     RegisterTopicCallbacks();
     control_thread_.Create(this, ControlThread, "WebotsGimbalCtl", 8192,
@@ -727,16 +736,13 @@ class WebotsGimbal
   uint32_t log_interval_{1000};                       ///< 周期日志间隔。
   LibXR::Thread control_thread_{};                    ///< 固定周期控制线程。
 
-  /** @brief 原始数据 topic 域。 */
-  LibXR::Topic::Domain raw_topic_domain_ = LibXR::Topic::Domain("libxr_def_domain");
-  /** @brief 相机陀螺仪 topic。 */
-  LibXR::Topic gyro_topic_ = FindRequiredTopic("camera_gyro", &raw_topic_domain_);
+  /** @brief 角速度 topic。 */
+  LibXR::Topic gyro_topic_;
+  /** @brief 云台姿态反馈 topic。 */
+  LibXR::Topic gimbal_quat_topic_;
   /** @brief DevC host topic 域。 */
   LibXR::Topic::Domain host_domain_ = LibXR::Topic::Domain("host");
   /** @brief DevC HostData 云台目标 topic。 */
   LibXR::Topic host_gimbal_target_topic_ =
       FindRequiredTopic("target_euler", &host_domain_);
-  /** @brief 云台姿态反馈 topic。 */
-  LibXR::Topic gimbal_quat_topic_ =
-      LibXR::Topic::FindOrCreate<LibXR::Quaternion<float>>("gimbal_quat", &host_domain_);
 };
