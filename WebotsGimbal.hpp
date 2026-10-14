@@ -28,22 +28,19 @@ depends: []
  */
 struct WebotsHostGimbalTarget
 {
-  float rol{0.0f};  ///< 机械俯仰轴 roll 命令，单位 rad
-  ///< Roll command of the mechanical pitch axis in rad
-  float pit{0.0f};  ///< pitch 字段，与 DevC HostData 布局对齐
-  ///< pitch field, aligned with the DevC HostData layout
+  float rol{0.0f};  ///< 绕枪管轴的角，两轴云台不用 / About the barrel, unused
+  float pit{0.0f};  ///< 俯仰命令，向上为正，单位 rad
+  ///< Elevation command, positive up, in rad
   float yaw{0.0f};  ///< yaw 命令，单位 rad
   ///< Yaw command in rad
-  float rol_dot{0.0f};  ///< 机械俯仰轴 roll 速度前馈，单位 rad/s
-  ///< Roll velocity feedforward of the mechanical pitch axis in rad/s
-  float pit_dot{0.0f};  ///< pitch 速度字段，与 DevC HostData 布局对齐
-  ///< pitch velocity field, aligned with the DevC HostData layout
+  float rol_dot{0.0f};  ///< 不用 / Unused
+  float pit_dot{0.0f};  ///< 俯仰速度前馈，单位 rad/s
+  ///< Elevation velocity feedforward in rad/s
   float yaw_dot{0.0f};  ///< yaw 速度前馈，单位 rad/s
   ///< Yaw velocity feedforward in rad/s
-  float rol_ddot{0.0f};  ///< 机械俯仰轴 roll 加速度前馈，单位 rad/s^2
-  ///< Roll acceleration feedforward of the mechanical pitch axis in rad/s^2
-  float pit_ddot{0.0f};  ///< pitch 加速度字段，与 DevC HostData 布局对齐
-  ///< pitch acceleration field, aligned with the DevC HostData layout
+  float rol_ddot{0.0f};  ///< 不用 / Unused
+  float pit_ddot{0.0f};  ///< 俯仰加速度前馈，单位 rad/s^2
+  ///< Elevation acceleration feedforward in rad/s^2
   float yaw_ddot{0.0f};  ///< yaw 加速度前馈，单位 rad/s^2
   ///< Yaw acceleration feedforward in rad/s^2
 };
@@ -385,11 +382,22 @@ class WebotsGimbal
     }
 
     const auto rotation = *static_cast<const LibXR::Quaternion<float>*>(data.addr_);
-    const auto euler = rotation.ToEulerAngleZYX();
+    // 反馈取枪管（机体 +y）方向的 yaw 与俯仰。DevC 的 Gimbal 在 x 前、y 左、z 上系里按
+    // ZYX 欧拉角控制 yaw 和中间的 pitch，绕枪管的横滚不受控，控制的正是这两个角；底盘倾斜时
+    // 若取本系 ZYX 欧拉角的 roll 作俯仰，会把绕枪管的转动混进来。
+    // The feedback is the yaw and elevation of the barrel (body +y). DevC's Gimbal controls
+    // the yaw and the middle pitch of the ZYX Euler angles in its x-forward, y-left, z-up
+    // frame, leaving the roll about the barrel free, so these are the angles it controls;
+    // taking the roll of this frame's ZYX angles as the elevation mixes in the rotation
+    // about the barrel when the chassis tilts.
+    const float w = rotation.w(), x = rotation.x(), y = rotation.y(), z = rotation.z();
+    const float dx = 2.0f * (x * y - w * z);
+    const float dy = 1.0f - 2.0f * (x * x + z * z);
+    const float dz = 2.0f * (y * z + w * x);
 
     std::lock_guard<std::mutex> lock(state_mutex_);
-    feedback_.pitch = euler[0];
-    feedback_.yaw = LimitRad(euler[2] + YAW_SENSOR_TO_COMMAND_OFFSET_RAD);
+    feedback_.pitch = std::atan2(dz, std::hypot(dx, dy));
+    feedback_.yaw = LimitRad(std::atan2(-dx, dy) + YAW_SENSOR_TO_COMMAND_OFFSET_RAD);
     feedback_.has_rotation = true;
   }
 
@@ -408,7 +416,7 @@ class WebotsGimbal
     std::memcpy(&target, data.addr_, sizeof(target));
 
     std::lock_guard<std::mutex> lock(state_mutex_);
-    if (std::abs(target.rol) < 1e-6f && std::abs(target.yaw) < 1e-6f)
+    if (std::abs(target.pit) < 1e-6f && std::abs(target.yaw) < 1e-6f)
     {
       ClearTargetCommandLocked();
       return;
@@ -423,17 +431,17 @@ class WebotsGimbal
     if (!target_command_.valid)
     {
       XR_LOG_INFO(
-          "WebotsGimbal first host/target_euler roll=%f yaw=%f roll_vel=%f yaw_vel=%f",
-          static_cast<double>(target.rol), static_cast<double>(target.yaw),
-          static_cast<double>(target.rol_dot), static_cast<double>(target.yaw_dot));
+          "WebotsGimbal first host/target_euler pit=%f yaw=%f pit_vel=%f yaw_vel=%f",
+          static_cast<double>(target.pit), static_cast<double>(target.yaw),
+          static_cast<double>(target.pit_dot), static_cast<double>(target.yaw_dot));
     }
 
     target_command_.valid = true;
-    target_command_.pitch = target.rol;
+    target_command_.pitch = target.pit;
     target_command_.yaw = target.yaw;
-    target_command_.pitch_vel = target.rol_dot;
+    target_command_.pitch_vel = target.pit_dot;
     target_command_.yaw_vel = target.yaw_dot;
-    target_command_.pitch_acc = target.rol_ddot;
+    target_command_.pitch_acc = target.pit_ddot;
     target_command_.yaw_acc = target.yaw_ddot;
   }
 

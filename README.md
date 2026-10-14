@@ -14,7 +14,7 @@ The two motors work in torque mode: when control is first taken over, `setPositi
 
 ## 2. 输入与控制 / Input and Control
 
-主输入是 `host/target_euler`，与 DevC `HostData::HostGimbalTarget` 布局相同（9 个 `float`），包含 roll / pitch / yaw、角速度和角加速度。模块使用 `rol` / `yaw` 及其速度、加速度，`pit` 字段与 DevC 数据布局对齐。含非有限值的目标被忽略并打印警告。当 `rol == 0 && yaw == 0` 时，语义与 DevC `HostData` 一致，即上位机放弃接管云台：模块清空当前目标、复位 PID，控制线程把两轴力矩置零。
+主输入是 `host/target_euler`，与 DevC `HostData::HostGimbalTarget` 布局相同（9 个 `float`），包含 roll / pitch / yaw、角速度和角加速度。模块使用 `pit` / `yaw` 及其速度、加速度，`rol` 不用（按团队坐标系规范恒为 0）。含非有限值的目标被忽略并打印警告。当 `pit == 0 && yaw == 0` 时，语义与 DevC `HostData` 一致，即上位机放弃接管云台：模块清空当前目标、复位 PID，控制线程把两轴力矩置零。
 
 反馈输入：
 
@@ -35,7 +35,7 @@ The two motors work in torque mode: when control is first taken over, `setPositi
 
 模块只消费最新的 Topic 值，PID 与 Webots 电机调用都在控制线程内执行。惯量前馈和两轴摩擦补偿是模型固定项，对应当前 world 的质量、重心、摩擦、相机安装姿态与关节轴。
 
-The main input is `host/target_euler`, with the same layout as DevC `HostData::HostGimbalTarget` (9 `float`), carrying roll / pitch / yaw, angular velocity and angular acceleration. The Module uses `rol` / `yaw` with their velocity and acceleration, and the `pit` field aligns with the DevC data layout. Targets containing non-finite values are ignored with a warning. When `rol == 0 && yaw == 0` the semantics match DevC `HostData`, meaning the host gives up control of the gimbal: the Module clears the current target, resets the PIDs and the control thread sets both axis torques to zero.
+The main input is `host/target_euler`, with the same layout as DevC `HostData::HostGimbalTarget` (9 `float`), carrying roll / pitch / yaw, angular velocity and angular acceleration. The Module uses `pit` / `yaw` with their velocity and acceleration; `rol` is unused (always 0 by the team coordinate-system standard). Targets containing non-finite values are ignored with a warning. When `pit == 0 && yaw == 0` the semantics match DevC `HostData`, meaning the host gives up control of the gimbal: the Module clears the current target, resets the PIDs and the control thread sets both axis torques to zero.
 
 Feedback inputs:
 
@@ -60,15 +60,15 @@ The Module consumes only the latest Topic values, and the PIDs and the Webots mo
 
 姿态 Topic 是 WebotsCamera 发布的云台 IMU 姿态。云台命令使用右手系，`x` 向右、`y` 向前、`z` 向上；yaw 以前向为 0、左转为正。
 
-`host/target_euler` 使用 DevC HostData 字段名；两轴云台使用 `rol` 和 `yaw`，`pit` 为 0。机械俯仰轴是右手系 `+X` 轴，对应 ZYX 欧拉角 roll；yaw 是 `+Z` 轴。
+`host/target_euler` 使用 DevC HostData 字段名，按团队坐标系规范：`pit` 是俯仰（向上为正），`yaw` 是偏航，`rol` 恒为 0。反馈取枪管（机体 `+y`）方向的 yaw 与俯仰，与 DevC Gimbal 控制的量一致：DevC 在 x 前、y 左、z 上系里按 ZYX 欧拉角控制 yaw 和中间的 pitch，绕枪管的横滚不受控，所以底盘倾斜时枪管仍指向命令方向。
 
-Webots world 中 pitch HingeJoint 的正方向使相机低头，而公开命令的 `+rol` 表示抬头，因此控制器在写 pitch 电机力矩时取反；yaw 轴与公开命令同号。取反用于匹配 Webots 关节轴方向，`host/target_euler` 的语义保持不变。
+Webots world 中 pitch HingeJoint 的正方向使相机低头，而公开命令的 `+pit` 表示抬头，因此控制器在写 pitch 电机力矩时取反；yaw 轴与公开命令同号。取反用于匹配 Webots 关节轴方向，`host/target_euler` 的语义保持不变。
 
 The attitude Topic is the gimbal IMU attitude published by WebotsCamera. The gimbal command uses a right-handed frame with `x` to the right, `y` forward and `z` up; yaw is 0 at the front and positive to the left.
 
-`host/target_euler` uses the DevC HostData field names; the two-axis gimbal uses `rol` and `yaw`, and `pit` is 0. The mechanical pitch axis is the right-handed `+X` axis, corresponding to the ZYX Euler angle roll; yaw is the `+Z` axis.
+`host/target_euler` uses the DevC HostData field names, following the team coordinate-system standard: `pit` is the elevation (positive up), `yaw` the yaw and `rol` is always 0. The feedback is the yaw and elevation of the barrel (body `+y`) direction, the quantities DevC's Gimbal controls: DevC controls the yaw and the middle pitch of the ZYX Euler angles in its x-forward, y-left, z-up frame and leaves the roll about the barrel free, so the barrel still points along the command when the chassis tilts.
 
-The positive direction of the pitch HingeJoint in the Webots world pitches the camera down, while `+rol` of the public command means pitching up, so the controller negates the pitch motor torque when writing it; the yaw axis has the same sign as the public command. The negation matches the Webots joint axis direction, and the semantics of `host/target_euler` stay unchanged.
+The positive direction of the pitch HingeJoint in the Webots world pitches the camera down, while `+pit` of the public command means pitching up, so the controller negates the pitch motor torque when writing it; the yaw axis has the same sign as the public command. The negation matches the Webots joint axis direction, and the semantics of `host/target_euler` stay unchanged.
 
 ## 4. 日志 / Log
 
